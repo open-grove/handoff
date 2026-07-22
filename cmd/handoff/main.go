@@ -256,10 +256,10 @@ func runCreate(profileName string, args []string) error {
 		if previewErr != nil {
 			return previewErr
 		}
-		sections, generator = preview.Sections, preview.Generator
-		if preview.Warning != "" {
-			generationWarning = errors.New(preview.Warning)
+		if err := validateServerPreview(preview); err != nil {
+			return err
 		}
+		sections, generator = preview.Sections, preview.Generator
 	}
 	if *review {
 		sections, err = reviewSections(ctx, goal, contextSource, sections, generator, *ttl)
@@ -296,6 +296,16 @@ func runCreate(profileName string, args []string) error {
 	if *output != "" {
 		absolute, _ := filepath.Abs(*output)
 		fmt.Println("Saved:  " + absolute)
+	}
+	return nil
+}
+
+func validateServerPreview(preview types.CompactPreviewResponse) error {
+	if preview.Warning != "" {
+		return fmt.Errorf("server compaction failed: %s", preview.Warning)
+	}
+	if !strings.HasPrefix(preview.Generator, "server:") {
+		return fmt.Errorf("server compaction failed: unexpected generator %q", preview.Generator)
 	}
 	return nil
 }

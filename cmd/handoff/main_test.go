@@ -96,6 +96,20 @@ func TestResolveCreateMode(t *testing.T) {
 	}
 }
 
+func TestServerGenerationMustFailClosed(t *testing.T) {
+	for _, preview := range []types.CompactPreviewResponse{
+		{Generator: "deterministic", Warning: "Agent Plan timed out"},
+		{Generator: "deterministic"},
+	} {
+		if err := validateServerPreview(preview); err == nil {
+			t.Fatalf("accepted failed server preview: %#v", preview)
+		}
+	}
+	if err := validateServerPreview(types.CompactPreviewResponse{Generator: "server:agent-plan"}); err != nil {
+		t.Fatalf("rejected valid server preview: %v", err)
+	}
+}
+
 func TestReviewSectionsAcceptsUnchangedDraft(t *testing.T) {
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", "true")

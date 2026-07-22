@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import worker, { renderHTML, route } from "../src/index.mjs";
+import worker, { readAgentPlanText, renderHTML, route } from "../src/index.mjs";
 
 function fakeDB() {
   const records = new Map();
@@ -106,4 +106,15 @@ test("HTML escapes untrusted content", () => {
 test("top-level worker converts unexpected failures to safe JSON", async () => {
   const result = await worker.fetch(new Request("https://handoff.example/v1/handoffs"), {}, { waitUntil() {} });
   assert.equal(result.status, 404);
+});
+
+test("Agent Plan SSE responses are assembled into one result", async () => {
+  const response = new Response([
+    'event: content_block_start\ndata: {"type":"content_block_start","content_block":{"type":"text","text":""}}',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{\\"human_background\\":\\"A\\","}}',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"\\"human_status\\":\\"B\\"}"}}',
+    'event: message_stop\ndata: {"type":"message_stop"}',
+    'data: [DONE]',
+  ].join("\n\n"), { headers: { "Content-Type": "text/event-stream" } });
+  assert.equal(await readAgentPlanText(response), '{"human_background":"A","human_status":"B"}');
 });
