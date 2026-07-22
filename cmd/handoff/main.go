@@ -27,6 +27,7 @@ import (
 const version = skillbundle.Version
 
 var brandedHandoffRef = regexp.MustCompile(`(?i)opengrove-handoff\s*[,，]?\s*(?:分享码|code)\s*[:：]\s*([A-Za-z0-9_-]{20,32})`)
+var embeddedHandoffURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+(?::[0-9]+)?/h/[A-Za-z0-9_-]{20,32}(?:\.md)?`)
 
 const usage = `handoff — portable context for people and agents.
 
@@ -254,15 +255,14 @@ func runCreate(profileName string, args []string) error {
 	if *jsonOutput {
 		return printJSON(result)
 	}
-	fmt.Println("opengrove-handoff，分享码：" + result.Handoff.ID)
 	if result.ShareURL != "" {
-		fmt.Println("查看交接：" + result.ShareURL)
-	}
-	if result.MarkdownURL != "" {
-		fmt.Println("Markdown：" + result.MarkdownURL)
+		fmt.Println("收到一条 opengrove-handoff 分享：")
+		fmt.Println("分享交接：" + result.ShareURL)
+	} else {
+		fmt.Println("opengrove-handoff，分享码：" + result.Handoff.ID)
 	}
 	fmt.Println()
-	fmt.Println("复制第一行给 Agent，或打开链接直接查看。")
+	fmt.Println("复制这段给 Agent，或打开链接直接查看。")
 	fmt.Println("有效期：" + result.Handoff.ExpiresAt.Local().Format(time.RFC3339))
 	if compactWarning != nil {
 		fmt.Println("Note:   current Agent was unavailable; used deterministic local compaction")
@@ -752,6 +752,9 @@ func parseHandoffRef(value string) (string, string) {
 	value = strings.TrimSpace(value)
 	if match := brandedHandoffRef.FindStringSubmatch(value); len(match) == 2 {
 		return match[1], ""
+	}
+	if embedded := embeddedHandoffURL.FindString(value); embedded != "" {
+		value = embedded
 	}
 	server := ""
 	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {

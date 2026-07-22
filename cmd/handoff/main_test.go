@@ -26,6 +26,10 @@ func TestParseHandoffRef(t *testing.T) {
 	if parsedID != id || server != "https://handoff.example" {
 		t.Fatalf("parsed Markdown URL (%q, %q)", parsedID, server)
 	}
+	parsedID, server = parseHandoffRef("收到一条 opengrove-handoff 分享，分享交接：[https://handoff.example/h/" + id + "](https://handoff.example/h/" + id + ")")
+	if parsedID != id || server != "https://handoff.example" {
+		t.Fatalf("parsed notification (%q, %q)", parsedID, server)
+	}
 }
 
 func TestParseHandoffRefRejectsInvalidValues(t *testing.T) {

@@ -32,10 +32,10 @@ printf '%s' "$HANDOFF_TOKEN" | \
 # 自动找当前工作区最近的 Codex / Claude / Pi Session
 handoff create "让同事继续完成 CLI 部署"
 
-# 创建成功后输出一份可直接复制给 Agent 的引用：
-# opengrove-handoff，分享码：a-secure-share-code
-# 查看交接：https://handoff.example.com/h/a-secure-share-code
-# Markdown：https://handoff.example.com/h/a-secure-share-code.md
+# 创建成功后输出一份人和 Agent 都能使用的引用：
+# 收到一条 opengrove-handoff 分享：
+# 分享交接：https://handoff.example.com/h/a-secure-share-code
+# URL 最后一段就是 capability 分享码；页面内可打开原始 Markdown
 
 # 可选：不调用 Agent，生成确定性本地摘要
 handoff create "continue" --compact none
