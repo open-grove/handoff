@@ -55,13 +55,13 @@ func (runner Runner) Resolve(requested, sourceKind string) (string, error) {
 			return runtime, nil
 		}
 	}
-	return "", errors.New("no supported Agent CLI found (install Codex, Claude Code, or Pi, or use --compact none)")
+	return "", errors.New("no supported Agent CLI found (install Codex, Claude Code, or Pi, or use --mode local)")
 }
 
-// Compact starts a fresh, ephemeral Agent invocation. It never resumes or
+// Generate starts a fresh, ephemeral Agent invocation. It never resumes or
 // mutates the source session and it does not select a model, so the runtime's
 // existing auth, provider, and default model remain in effect.
-func (runner Runner) Compact(ctx context.Context, runtime, goal string, source types.Context) (types.Sections, error) {
+func (runner Runner) Generate(ctx context.Context, runtime, goal string, source types.Context) (types.Sections, error) {
 	if !isRuntime(runtime) {
 		return types.Sections{}, fmt.Errorf("unsupported Agent runtime %q", runtime)
 	}
@@ -83,7 +83,7 @@ func (runner Runner) Compact(ctx context.Context, runtime, goal string, source t
 	}
 	output, err := runner.execute()(ctx, runtime, args, prompt, tempDir)
 	if err != nil {
-		return types.Sections{}, fmt.Errorf("%s handoff compaction failed: %w", runtime, err)
+		return types.Sections{}, fmt.Errorf("%s handoff generation failed: %w", runtime, err)
 	}
 	return card.ParseSections(output)
 }

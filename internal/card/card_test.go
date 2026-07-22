@@ -76,8 +76,38 @@ func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
 			t.Fatalf("page missing %q: %s", expected, page)
 		}
 	}
+	for _, removed := range []string{"READY TO CONTINUE", "一份给人和 Agent", "来自 codex", "有效期至", "Shared with OpenGrove"} {
+		if strings.Contains(page, removed) {
+			t.Fatalf("page still contains removed decoration %q: %s", removed, page)
+		}
+	}
+	if !strings.Contains(page, `<section class="hero"><h1>继续交接工具</h1></section>`) {
+		t.Fatalf("page title is not the compact heading: %s", page)
+	}
 	if strings.Index(page, "核心流程已经可用") > strings.Index(page, "Agent 交接上下文") {
 		t.Fatal("human summary must appear before agent context")
+	}
+}
+
+func TestParseReviewedMarkdownRoundTrip(t *testing.T) {
+	now := time.Now().UTC()
+	draft := types.Handoff{
+		Version: types.ProtocolVersion, ID: "review-draft", Goal: "continue",
+		Source: types.SourceRef{Kind: "codex"}, Generator: "agent:codex",
+		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	markdown := RenderReviewDraft(draft, Sections{
+		HumanBackground: "Background", HumanStatus: "Ready", HumanTodos: []string{"Ship"},
+		Context: "Known\n\n# Embedded title\n\n### Arbitrary subsection\n\nStill context.", Decisions: []string{"Use Markdown"}, CurrentState: "Tests pass",
+		ImportantFiles: []string{"README.md"}, NextSteps: []string{"Deploy"}, OpenQuestions: []string{"Domain?"},
+	})
+	markdown = strings.Replace(markdown, "Tests pass", "Tests pass after review", 1)
+	sections, err := ParseReviewedMarkdown(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sections.CurrentState != "Tests pass after review" || !strings.Contains(sections.Context, "Still context.") || len(sections.Decisions) != 1 || sections.NextSteps[0] != "Deploy" {
+		t.Fatalf("unexpected reviewed sections: %#v", sections)
 	}
 }
 
@@ -138,7 +168,7 @@ func TestBuildFallsBackWhenModelContractIsIncomplete(t *testing.T) {
 		Messages: []types.Message{{Role: "user", Text: "known state"}},
 	}, now, now.Add(time.Hour))
 	if err == nil {
-		t.Fatal("expected compact contract error")
+		t.Fatal("expected generation contract error")
 	}
 	if handoff.Generator != "deterministic" {
 		t.Fatalf("generator = %q", handoff.Generator)

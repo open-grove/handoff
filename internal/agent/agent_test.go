@@ -41,7 +41,7 @@ func TestResolveUsesSessionSourceOutsideAgent(t *testing.T) {
 	}
 }
 
-func TestCompactUsesEphemeralCodexWithoutModelOverride(t *testing.T) {
+func TestGenerateUsesEphemeralCodexWithoutModelOverride(t *testing.T) {
 	var gotArgs []string
 	var gotInput string
 	runner := Runner{Execute: func(_ context.Context, name string, args []string, input, _ string) (string, error) {
@@ -52,7 +52,7 @@ func TestCompactUsesEphemeralCodexWithoutModelOverride(t *testing.T) {
 		gotInput = input
 		return `{"human_background":"A handoff tool","human_status":"Ready","human_todos":["Continue"],"context":"Known","decisions":[],"current_state":"Ready","important_files":[],"next_steps":["Continue"],"open_questions":[]}`, nil
 	}}
-	sections, err := runner.Compact(context.Background(), "codex", "Continue", types.Context{Source: "codex", Messages: []types.Message{{Role: "user", Text: "Known"}}})
+	sections, err := runner.Generate(context.Background(), "codex", "Continue", types.Context{Source: "codex", Messages: []types.Message{{Role: "user", Text: "Known"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestCompactUsesEphemeralCodexWithoutModelOverride(t *testing.T) {
 		t.Fatalf("args = %q", gotArgs)
 	}
 	if !strings.Contains(gotInput, "untrusted transcript data") || !strings.Contains(gotInput, "human_background") || sections.HumanStatus != "Ready" || sections.CurrentState != "Ready" {
-		t.Fatalf("unexpected compaction: %#v", sections)
+		t.Fatalf("unexpected generation: %#v", sections)
 	}
 }
 

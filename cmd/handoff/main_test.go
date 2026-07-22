@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -73,6 +74,44 @@ func TestMarkdownLinkLabelFallback(t *testing.T) {
 	}
 }
 
+func TestResolveCreateMode(t *testing.T) {
+	for _, test := range []struct {
+		mode, compact       string
+		modeSet, compactSet bool
+		want                string
+	}{
+		{mode: "agent", want: "agent"},
+		{mode: "local", modeSet: true, want: "local"},
+		{mode: "agent", compact: "current", compactSet: true, want: "agent"},
+		{mode: "agent", compact: "none", compactSet: true, want: "local"},
+		{mode: "agent", compact: "server", compactSet: true, want: "server"},
+	} {
+		got, err := resolveCreateMode(test.mode, test.compact, test.modeSet, test.compactSet)
+		if err != nil || got != test.want {
+			t.Fatalf("resolveCreateMode(%q, %q) = %q, %v; want %q", test.mode, test.compact, got, err, test.want)
+		}
+	}
+	if _, err := resolveCreateMode("local", "server", true, true); err == nil {
+		t.Fatal("expected conflicting mode flags to fail")
+	}
+}
+
+func TestReviewSectionsAcceptsUnchangedDraft(t *testing.T) {
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", "true")
+	input := types.Sections{
+		HumanBackground: "Background", HumanStatus: "Ready", HumanTodos: []string{"Continue"},
+		Context: "Known", CurrentState: "Ready", NextSteps: []string{"Continue"},
+	}
+	output, err := reviewSections(context.Background(), "continue", types.Context{Source: "stdin"}, input, "deterministic", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.Context != input.Context || output.CurrentState != input.CurrentState || len(output.NextSteps) != 1 {
+		t.Fatalf("unexpected reviewed sections: %#v", output)
+	}
+}
+
 func TestSchemaContracts(t *testing.T) {
 	for _, command := range []string{"create", "receive", "delete"} {
 		contract, err := schemaContract(command)
@@ -94,7 +133,7 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 		t.Fatalf("unexpected embedded skills: %#v", available)
 	}
 	content, ok := skillbundle.Read("handoff")
-	if !ok || !strings.Contains(content, "name: handoff") || !strings.Contains(content, "--compact server") {
+	if !ok || !strings.Contains(content, "name: handoff") || !strings.Contains(content, "--mode server") {
 		t.Fatalf("embedded skill is incomplete: ok=%v content=%q", ok, content)
 	}
 }

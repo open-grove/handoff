@@ -2,7 +2,7 @@ package skills
 
 import _ "embed"
 
-const Version = "0.6.0"
+const Version = "0.7.0"
 
 type Skill struct {
 	Name        string   `json:"name"`

@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "opengrove-handoff",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-07-22",
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+  "vars": {
+    "HANDOFF_PUBLIC_URL": "https://handoff.openmau.com",
+    "ARK_AGENT_PLAN_BASE_URL": "https://ark.cn-beijing.volces.com/api/plan",
+    "ARK_AGENT_PLAN_MODEL": "kimi-k3"
+  },
+  "routes": [
+    {
+      "pattern": "handoff.openmau.com",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "HANDOFF_DB",
+      "database_name": "opengrove-handoff",
+      "database_id": "cb54aada-54c9-4bfc-975b-0f812b31f909",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

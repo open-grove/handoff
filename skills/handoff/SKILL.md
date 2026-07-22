@@ -15,13 +15,15 @@ Use the `handoff` CLI as the source of truth. Create an immutable, portable snap
 
 ## Create a Handoff
 
-Use the default path unless the user requests another compaction mode:
+Use the default path unless the user requests another generation mode:
 
 ```bash
 handoff create "the next concrete goal"
 ```
 
-The default `--compact current` starts a new ephemeral invocation of the current Agent runtime. It reuses that runtime's existing authentication, configuration, and default model, but never resumes, compacts, or modifies the source session. Only compacted sections are uploaded to the handoff service.
+The default `--mode agent` starts a new ephemeral invocation of the current Agent runtime. It reuses that runtime's existing authentication, configuration, and default model, but never resumes, compacts, or modifies the source session. Only generated sections are uploaded to the handoff service.
+
+If the provider exposes a readable native compact summary, the CLI uses that summary plus the retained tail. Claude Code and Pi currently expose this data. Codex records the compact boundary but may encrypt the summary; when it is unreadable, the CLI retains sanitized readable messages and reports `native_summary_reused: false` in `--dry-run`. Never claim that Handoff invoked native `/compact`.
 
 The generated Markdown has two audience layers. `For Human` contains a short plain-language project background, current situation, and todo list. `For Agent` preserves the operational goal, context, decisions, current state, important files, next steps, and open questions. Keep the human layer understandable without exposing unnecessary paths or implementation detail; keep the Agent layer precise enough to resume work.
 
@@ -29,6 +31,12 @@ Use `--dry-run` to inspect the selected source, Agent, upload behavior, and TTL 
 
 ```bash
 handoff create "the next concrete goal" --dry-run
+```
+
+Use `--review` when the user wants to inspect or edit the generated Markdown before it is published:
+
+```bash
+handoff create "the next concrete goal" --review
 ```
 
 Select an alternate source only when auto-detection is unsuitable:
@@ -39,9 +47,15 @@ handoff create "continue the task" --file transcript.md --file decisions.md
 agent-export | handoff create "continue the task"
 ```
 
-Use `--compact none` only when the user wants deterministic local extraction without an Agent-generated summary.
+Use `--mode local` only when the user wants deterministic local extraction without an Agent-generated summary.
 
-Never select `--compact server` silently. It sends the retained, sanitized source context to the handoff server and its configured model. Use it only when the user explicitly requests server-side compaction or after clearly explaining that upload and receiving approval.
+Never select server mode silently. It sends the retained, sanitized source context to the handoff server and its configured model. Use it only when the user explicitly requests server-side generation or after clearly explaining that upload and receiving approval; both flags are required:
+
+```bash
+handoff create "the next concrete goal" --mode server --include-transcript
+```
+
+Server mode generates a preview without storing the source transcript, then publishes only final sections. If `--review` is also used, the source context must still be uploaded before the review so the server can generate that preview.
 
 ## Receive a Handoff
 
@@ -75,7 +89,7 @@ Run it only after the user explicitly confirms deletion of the exact handoff. Ne
 
 ## Handle Failures
 
-- If `--compact current` cannot invoke the current Agent, report the warning. The CLI deliberately falls back to deterministic sections and never silently switches to server compaction.
+- If `--mode agent` cannot invoke the current Agent, report the warning. The CLI deliberately falls back to deterministic sections and never silently switches to server generation.
 - If discovery is wrong, use `--from codex|claude|pi`, piped stdin, or repeatable `--file` values.
 - If setup fails, use `handoff doctor`, then inspect `handoff auth --help` or `handoff config --help`.
 - Prefer `--json` when another Agent or program will consume create or receive output.

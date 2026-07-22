@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -44,7 +45,7 @@ Usage:
   handoff [--profile NAME] <command> [flags]
 
 Commands:
-  create       Compact with the current Agent and share a handoff     Risk: write
+  create       Generate with the current Agent and share a handoff    Risk: write
   receive      Fetch a handoff by code or URL                         Risk: read
   delete       Delete a handoff before it expires                     Risk: high-risk-write
   auth         Login, status, and logout
@@ -61,9 +62,10 @@ Global flags:
 Context sources:
   auto (default), codex, claude, pi, piped stdin, or one or more --file values.
 
-Compaction:
-  current (default) reuses the current Agent's auth, config, and default model.
-  It starts an ephemeral sidecar and never compacts or resumes the source session.
+Generation modes:
+  agent (default) reuses the current Agent's auth, config, and default model.
+  local uses deterministic extraction. server requires --include-transcript.
+  The source session is always read-only and is never compacted or resumed.
 `
 
 type stringList []string
@@ -147,7 +149,8 @@ func runCreate(profileName string, args []string) error {
 	flags := flag.NewFlagSet("handoff create", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	from := flags.String("from", "auto", "context source: auto, codex, claude, or pi")
-	compactMode := flags.String("compact", "current", "compaction: current, none, or server")
+	mode := flags.String("mode", "agent", "generation mode: agent, local, or server")
+	legacyCompact := flags.String("compact", "", "deprecated alias: current, none, or server")
 	agentName := flags.String("agent", "auto", "Agent runtime: auto, codex, claude, or pi (never selects a model)")
 	var files stringList
 	flags.Var(&files, "file", "context file (repeatable)")
@@ -156,6 +159,8 @@ func runCreate(profileName string, args []string) error {
 	ttl := flags.Duration("ttl", 7*24*time.Hour, "handoff lifetime")
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	dryRun := flags.Bool("dry-run", false, "inspect source and request without creating")
+	includeTranscript := flags.Bool("include-transcript", false, "authorize retained context upload in server mode (never persisted)")
+	review := flags.Bool("review", false, "edit the generated Markdown before publishing")
 	output := flags.String("output", "", "also write HANDOFF.md to this path")
 	force := flags.Bool("force", false, "overwrite --output")
 	if err := flags.Parse(args); err != nil {
@@ -170,8 +175,17 @@ func runCreate(profileName string, args []string) error {
 	if strings.TrimSpace(goalArgument) == "" || len(flags.Args()) > 0 {
 		return errors.New("usage: handoff create \"next goal\" [--from auto|codex|claude|pi] [--file PATH]")
 	}
-	if *compactMode != "current" && *compactMode != "none" && *compactMode != "server" {
-		return errors.New("--compact must be current, none, or server")
+	setFlags := map[string]bool{}
+	flags.Visit(func(item *flag.Flag) { setFlags[item.Name] = true })
+	selectedMode, err := resolveCreateMode(*mode, *legacyCompact, setFlags["mode"], setFlags["compact"])
+	if err != nil {
+		return err
+	}
+	if selectedMode != "server" && *includeTranscript {
+		return errors.New("--include-transcript is only valid with --mode server")
+	}
+	if selectedMode == "server" && !*includeTranscript && !*dryRun {
+		return errors.New("server mode uploads retained source context; repeat with --include-transcript after confirming this is intended")
 	}
 	goal := card.SanitizeGoal(goalArgument)
 	readStdin, stdinReader, err := resolveStdin(*stdin, len(files) > 0)
@@ -191,22 +205,26 @@ func runCreate(profileName string, args []string) error {
 	contextSource = card.SanitizeContext(contextSource)
 	if *dryRun {
 		resolvedAgent := ""
-		if *compactMode == "current" {
+		if selectedMode == "agent" {
 			resolvedAgent, _ = (agentruntime.Runner{}).Resolve(*agentName, contextSource.Source)
 		}
 		return printJSON(map[string]any{
-			"dry_run":     true,
-			"goal":        goal,
-			"source":      contextSource.Source,
-			"session_id":  contextSource.SessionID,
-			"cursor":      contextSource.Cursor,
-			"messages":    len(contextSource.Messages),
-			"characters":  contextCharacters(contextSource),
-			"repository":  contextSource.Repo,
-			"compact":     *compactMode,
-			"agent":       resolvedAgent,
-			"uploads":     uploadDescription(*compactMode),
-			"ttl_seconds": int64(ttl.Seconds()),
+			"dry_run":               true,
+			"goal":                  goal,
+			"source":                contextSource.Source,
+			"session_id":            contextSource.SessionID,
+			"cursor":                contextSource.Cursor,
+			"messages":              len(contextSource.Messages),
+			"characters":            contextCharacters(contextSource),
+			"repository":            contextSource.Repo,
+			"mode":                  selectedMode,
+			"agent":                 resolvedAgent,
+			"native_compact_found":  contextSource.NativeCompactFound,
+			"native_summary_reused": strings.TrimSpace(contextSource.Summary) != "",
+			"uploads":               uploadDescription(selectedMode),
+			"include_transcript":    *includeTranscript,
+			"review":                *review,
+			"ttl_seconds":           int64(ttl.Seconds()),
 		})
 	}
 	_, profile, err := loadProfile(profileName)
@@ -216,36 +234,47 @@ func runCreate(profileName string, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	apiClient := client.Client{Server: profile.Server, Token: profile.Token}
-	var result types.CreateResponse
-	var compactWarning error
-	if *compactMode == "server" {
-		result, err = apiClient.CompactOnServer(ctx, types.CompactRequest{
-			Goal: goal, Context: contextSource, TTLSeconds: int64(ttl.Seconds()),
-		})
-	} else {
-		sections := card.FallbackSections(goal, contextSource)
-		generator := "deterministic"
-		if *compactMode == "current" {
-			runner := agentruntime.Runner{}
-			runtime, resolveErr := runner.Resolve(*agentName, contextSource.Source)
-			if resolveErr != nil {
-				compactWarning = resolveErr
-			} else if compacted, compactErr := runner.Compact(ctx, runtime, goal, contextSource); compactErr != nil {
-				compactWarning = compactErr
-			} else {
-				sections = compacted
-				generator = "agent:" + runtime
-			}
+	sections := card.FallbackSections(goal, contextSource)
+	generator := "deterministic"
+	var generationWarning error
+	switch selectedMode {
+	case "agent":
+		runner := agentruntime.Runner{}
+		runtime, resolveErr := runner.Resolve(*agentName, contextSource.Source)
+		if resolveErr != nil {
+			generationWarning = resolveErr
+		} else if generated, generateErr := runner.Generate(ctx, runtime, goal, contextSource); generateErr != nil {
+			generationWarning = generateErr
+		} else {
+			sections = generated
+			generator = "agent:" + runtime
 		}
-		result, err = apiClient.Publish(ctx, types.PublishRequest{
-			Goal: goal,
-			Source: types.SourceRef{
-				Kind: contextSource.Source, SessionID: contextSource.SessionID,
-				Cursor: contextSource.Cursor, UpdatedAt: contextSource.UpdatedAt,
-			},
-			Sections: sections, Generator: generator, TTLSeconds: int64(ttl.Seconds()),
+	case "server":
+		preview, previewErr := apiClient.PreviewServerCompaction(ctx, types.CompactRequest{
+			Goal: goal, Context: contextSource,
 		})
+		if previewErr != nil {
+			return previewErr
+		}
+		sections, generator = preview.Sections, preview.Generator
+		if preview.Warning != "" {
+			generationWarning = errors.New(preview.Warning)
+		}
 	}
+	if *review {
+		sections, err = reviewSections(ctx, goal, contextSource, sections, generator, *ttl)
+		if err != nil {
+			return err
+		}
+	}
+	result, err := apiClient.Publish(ctx, types.PublishRequest{
+		Goal: goal,
+		Source: types.SourceRef{
+			Kind: contextSource.Source, SessionID: contextSource.SessionID,
+			Cursor: contextSource.Cursor, UpdatedAt: contextSource.UpdatedAt,
+		},
+		Sections: sections, Generator: generator, TTLSeconds: int64(ttl.Seconds()),
+	})
 	if err != nil {
 		return err
 	}
@@ -258,11 +287,11 @@ func runCreate(profileName string, args []string) error {
 		return printJSON(result)
 	}
 	fmt.Print(formatShareMessage(result))
-	if compactWarning != nil {
-		fmt.Println("Note:   current Agent was unavailable; used deterministic local compaction")
-		fmt.Println("Cause:  " + compactWarning.Error())
+	if generationWarning != nil {
+		fmt.Println("Note:   requested generator was unavailable; used deterministic local extraction")
+		fmt.Println("Cause:  " + generationWarning.Error())
 	} else if result.Handoff.Generator == "deterministic" {
-		fmt.Println("Note:   deterministic compaction was used")
+		fmt.Println("Note:   deterministic local extraction was used")
 	}
 	if *output != "" {
 		absolute, _ := filepath.Abs(*output)
@@ -294,11 +323,84 @@ func markdownLinkLabel(value string) string {
 	return strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(value)
 }
 
-func uploadDescription(compactMode string) string {
-	if compactMode == "server" {
-		return "retained source context"
+func uploadDescription(mode string) string {
+	if mode == "server" {
+		return "retained source context for preview, then generated sections for publishing"
 	}
-	return "compacted sections only"
+	return "generated sections only"
+}
+
+func resolveCreateMode(mode, legacyCompact string, modeExplicit, compactExplicit bool) (string, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "agent" && mode != "local" && mode != "server" {
+		return "", errors.New("--mode must be agent, local, or server")
+	}
+	if !compactExplicit {
+		return mode, nil
+	}
+	legacy := map[string]string{"current": "agent", "none": "local", "server": "server"}[strings.ToLower(strings.TrimSpace(legacyCompact))]
+	if legacy == "" {
+		return "", errors.New("deprecated --compact must be current, none, or server")
+	}
+	if modeExplicit && mode != legacy {
+		return "", fmt.Errorf("--mode %s conflicts with deprecated --compact %s", mode, legacyCompact)
+	}
+	return legacy, nil
+}
+
+func reviewSections(ctx context.Context, goal string, sourceContext types.Context, sections types.Sections, generator string, ttl time.Duration) (types.Sections, error) {
+	now := time.Now().UTC()
+	draft := types.Handoff{
+		Version: types.ProtocolVersion, ID: "review-draft", Goal: goal,
+		Source: types.SourceRef{
+			Kind: sourceContext.Source, SessionID: sourceContext.SessionID,
+			Cursor: sourceContext.Cursor, UpdatedAt: sourceContext.UpdatedAt,
+		},
+		Generator: generator, CreatedAt: now, ExpiresAt: now.Add(ttl),
+	}
+	file, err := os.CreateTemp("", "handoff-review-*.md")
+	if err != nil {
+		return types.Sections{}, err
+	}
+	path := file.Name()
+	defer os.Remove(path)
+	draftMarkdown := "<!-- Edit the content below, keep the section headings and handoff-section comments, then save and close to publish. -->\n\n" + card.RenderReviewDraft(draft, sections)
+	if _, err := io.WriteString(file, draftMarkdown); err != nil {
+		file.Close()
+		return types.Sections{}, err
+	}
+	if err := file.Close(); err != nil {
+		return types.Sections{}, err
+	}
+	editor := strings.TrimSpace(os.Getenv("VISUAL"))
+	if editor == "" {
+		editor = strings.TrimSpace(os.Getenv("EDITOR"))
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	parts := strings.Fields(editor)
+	if len(parts) == 0 {
+		return types.Sections{}, errors.New("VISUAL or EDITOR is empty")
+	}
+	command := exec.CommandContext(ctx, parts[0], append(parts[1:], path)...)
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stderr, os.Stderr
+	if tty, ttyErr := os.OpenFile("/dev/tty", os.O_RDWR, 0); ttyErr == nil {
+		defer tty.Close()
+		command.Stdin, command.Stdout = tty, tty
+	}
+	if err := command.Run(); err != nil {
+		return types.Sections{}, fmt.Errorf("review editor failed: %w", err)
+	}
+	edited, err := os.ReadFile(path)
+	if err != nil {
+		return types.Sections{}, err
+	}
+	parsed, err := card.ParseReviewedMarkdown(string(edited))
+	if err != nil {
+		return types.Sections{}, fmt.Errorf("reviewed handoff is invalid: %w", err)
+	}
+	return parsed, nil
 }
 
 func runReceive(profileName string, args []string) error {
@@ -580,30 +682,33 @@ func schemaContract(command string) (map[string]any, error) {
 	case "create":
 		return map[string]any{
 			"name":        "handoff create",
-			"description": "Create an immutable handoff from a read-only context snapshot.",
+			"description": "Generate and publish an immutable handoff from a read-only context snapshot.",
 			"inputSchema": map[string]any{
 				"type": "object", "required": []string{"goal"}, "additionalProperties": false,
 				"properties": map[string]any{
-					"goal":    stringProperty("The next concrete goal for the receiver."),
-					"from":    map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto"},
-					"compact": map[string]any{"type": "string", "enum": []string{"current", "none", "server"}, "default": "current", "description": "server explicitly uploads retained source context; other modes upload sections only."},
-					"agent":   map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto", "description": "Selects an Agent runtime, never a model."},
-					"file":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable context file path."},
-					"stdin":   booleanProperty("Read context from stdin."),
-					"no_git":  booleanProperty("Omit repository metadata."),
-					"ttl":     map[string]any{"type": "string", "default": "168h", "description": "Go duration for the handoff lifetime."},
-					"json":    booleanProperty("Print machine-readable output."),
-					"dry_run": booleanProperty("Inspect source and upload behavior without an Agent or network write."),
-					"output":  stringProperty("Also write HANDOFF.md to this path."),
-					"force":   booleanProperty("Allow overwriting the output file."),
+					"goal":               stringProperty("The next concrete goal for the receiver."),
+					"from":               map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto"},
+					"mode":               map[string]any{"type": "string", "enum": []string{"agent", "local", "server"}, "default": "agent", "description": "agent and local publish sections only; server also requires include_transcript."},
+					"agent":              map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto", "description": "Selects an Agent runtime, never a model."},
+					"include_transcript": booleanProperty("Explicitly authorize retained context upload; valid only with server mode."),
+					"review":             booleanProperty("Edit generated Markdown before publishing."),
+					"file":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable context file path."},
+					"stdin":              booleanProperty("Read context from stdin."),
+					"no_git":             booleanProperty("Omit repository metadata."),
+					"ttl":                map[string]any{"type": "string", "default": "168h", "description": "Go duration for the handoff lifetime."},
+					"json":               booleanProperty("Print machine-readable output."),
+					"dry_run":            booleanProperty("Inspect source and upload behavior without an Agent or network write."),
+					"output":             stringProperty("Also write HANDOFF.md to this path."),
+					"force":              booleanProperty("Allow overwriting the output file."),
 				},
 			},
 			"outputSchema": createOutputSchema(),
 			"_meta": map[string]any{
 				"envelope_version": "1.0", "risk": "write", "danger": false,
 				"session":              "read-only snapshot; never compacted, resumed, or modified",
-				"default_upload":       "compacted sections only",
+				"default_upload":       "generated sections only",
 				"default_model_config": "inherits the current Agent runtime",
+				"native_compact":       "reuses a readable native summary plus its retained tail; never invokes native /compact",
 			},
 		}, nil
 	case "receive":

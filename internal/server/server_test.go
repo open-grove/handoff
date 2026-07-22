@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +14,14 @@ import (
 
 	"github.com/open-grove/handoff/internal/types"
 )
+
+type previewCompactor struct{}
+
+func (previewCompactor) Compact(_ context.Context, _ string, _ types.Context) (types.Sections, error) {
+	return types.Sections{Context: "review me", CurrentState: "ready", NextSteps: []string{"continue"}}, nil
+}
+
+func (previewCompactor) Generator() string { return "server:test" }
 
 func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	store, err := NewStore(t.TempDir())
@@ -152,5 +161,38 @@ func TestDefaultPublishEndpointRejectsRawContext(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("raw context status = %d", response.StatusCode)
+	}
+}
+
+func TestCompactPreviewDoesNotStoreHandoff(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer((&API{Store: store, Compactor: previewCompactor{}, DefaultTTL: time.Hour}).Handler())
+	defer server.Close()
+	body := `{"goal":"continue","context":{"source":"stdin","messages":[{"role":"user","text":"raw transcript"}]}}`
+	response, err := http.Post(server.URL+"/v1/handoffs/compact-preview", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(response.Body)
+		t.Fatalf("preview status = %d: %s", response.StatusCode, data)
+	}
+	var preview types.CompactPreviewResponse
+	if err := json.NewDecoder(response.Body).Decode(&preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Generator != "server:test" || preview.Sections.Context != "review me" {
+		t.Fatalf("unexpected preview: %#v", preview)
+	}
+	entries, err := os.ReadDir(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("preview persisted %d files", len(entries))
 	}
 }

@@ -38,7 +38,7 @@ func main() {
 	if agentPlanAPIKey != "" {
 		compactor = card.AgentPlanCompactor{BaseURL: agentPlanBaseURL, APIKey: agentPlanAPIKey, Model: agentPlanModel}
 	} else {
-		logger.Info("optional Agent Plan server compaction disabled; normal current-Agent publishing remains available")
+		logger.Info("optional Agent Plan server generation disabled; normal current-Agent publishing remains available")
 	}
 
 	api := &server.API{

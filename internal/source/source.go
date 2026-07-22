@@ -196,9 +196,11 @@ func ParseCodex(reader io.Reader) (types.Context, error) {
 		case "session_meta":
 			output.CWD = stringValue(payload["cwd"])
 			output.SessionID = firstString(payload["id"], payload["session_id"])
-		case "turn_context":
-			if summary := stringValue(payload["summary"]); summary != "" {
+		case "compacted":
+			output.NativeCompactFound = true
+			if summary := codexCompactSummary(payload); summary != "" {
 				output.Summary = summary
+				output.Messages = nil
 			}
 		case "response_item":
 			if stringValue(payload["type"]) != "message" {
@@ -228,13 +230,22 @@ func ParseClaude(reader io.Reader) (types.Context, error) {
 		}
 		entryType := stringValue(value["type"])
 		if entryType == "system" && stringValue(value["subtype"]) == "compact_boundary" {
-			output.Summary = stringValue(value["content"])
+			output.NativeCompactFound = true
 			return
 		}
 		if entryType != "user" && entryType != "assistant" || boolValue(value["isSidechain"]) || boolValue(value["isMeta"]) {
 			return
 		}
 		message := object(value["message"])
+		if boolValue(value["isCompactSummary"]) {
+			if summary := contentText(message["content"]); summary != "" {
+				output.Summary = summary
+				output.NativeCompactFound = true
+				output.Messages = nil
+				output.Cursor = firstString(value["uuid"], fmt.Sprintf("line:%d", line))
+			}
+			return
+		}
 		role := stringValue(message["role"])
 		if role == "" {
 			role = entryType
@@ -249,11 +260,37 @@ func ParseClaude(reader io.Reader) (types.Context, error) {
 
 func ParsePi(reader io.Reader) (types.Context, error) {
 	var output types.Context
+	type identifiedMessage struct {
+		id      string
+		message types.Message
+	}
+	var seen []identifiedMessage
 	err := parseJSONLines(reader, func(line int, value map[string]any) {
 		entryType := stringValue(value["type"])
 		if entryType == "session" || entryType == "session_meta" {
 			output.CWD = firstString(value["cwd"], object(value["payload"])["cwd"])
 			output.SessionID = firstString(value["id"], value["sessionId"], object(value["payload"])["id"])
+		}
+		if entryType == "compaction" {
+			summary := firstString(value["summary"], object(value["payload"])["summary"])
+			if summary == "" {
+				return
+			}
+			output.Summary = summary
+			output.NativeCompactFound = true
+			firstKeptID := firstString(value["firstKeptEntryId"], object(value["payload"])["firstKeptEntryId"])
+			output.Messages = nil
+			if firstKeptID != "" {
+				for index, item := range seen {
+					if item.id == firstKeptID {
+						for _, kept := range seen[index:] {
+							output.Messages = append(output.Messages, kept.message)
+						}
+						break
+					}
+				}
+			}
+			return
 		}
 		message := object(value["message"])
 		role := stringValue(message["role"])
@@ -261,11 +298,30 @@ func ParsePi(reader io.Reader) (types.Context, error) {
 			return
 		}
 		if text := contentText(message["content"]); text != "" {
-			output.Messages = append(output.Messages, types.Message{Role: role, Text: text, At: parseTime(value["timestamp"])})
+			parsed := types.Message{Role: role, Text: text, At: parseTime(value["timestamp"])}
+			output.Messages = append(output.Messages, parsed)
+			seen = append(seen, identifiedMessage{id: stringValue(value["id"]), message: parsed})
 			output.Cursor = fmt.Sprintf("line:%d", line)
 		}
 	})
 	return output, err
+}
+
+func codexCompactSummary(payload map[string]any) string {
+	if summary := firstString(payload["message"], payload["summary"]); summary != "" {
+		return summary
+	}
+	history, _ := payload["replacement_history"].([]any)
+	for index := len(history) - 1; index >= 0; index-- {
+		entry := object(history[index])
+		if stringValue(entry["type"]) != "compaction" {
+			continue
+		}
+		if summary := firstString(entry["summary"], entry["content"], object(entry["payload"])["summary"]); summary != "" {
+			return summary
+		}
+	}
+	return ""
 }
 
 func parseJSONLines(reader io.Reader, visit func(int, map[string]any)) error {

@@ -34,6 +34,12 @@ func (client Client) CompactOnServer(ctx context.Context, input types.CompactReq
 	return output, err
 }
 
+func (client Client) PreviewServerCompaction(ctx context.Context, input types.CompactRequest) (types.CompactPreviewResponse, error) {
+	var output types.CompactPreviewResponse
+	err := client.request(ctx, http.MethodPost, "/v1/handoffs/compact-preview", input, &output)
+	return output, err
+}
+
 func (client Client) Get(ctx context.Context, id string) (types.CreateResponse, error) {
 	var output types.CreateResponse
 	err := client.request(ctx, http.MethodGet, "/v1/handoffs/"+id, nil, &output)

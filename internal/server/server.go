@@ -138,6 +138,7 @@ func (api *API) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/schema/compact", api.compactSchema)
 	mux.HandleFunc("POST /v1/handoffs", api.publish)
 	mux.HandleFunc("POST /v1/handoffs/compact", api.compact)
+	mux.HandleFunc("POST /v1/handoffs/compact-preview", api.compactPreview)
 	mux.HandleFunc("GET /v1/handoffs/{id}", api.get)
 	mux.HandleFunc("DELETE /v1/handoffs/{id}", api.delete)
 	mux.HandleFunc("GET /h/{id}", api.page)
@@ -160,7 +161,7 @@ func (api *API) createSchema(response http.ResponseWriter, _ *http.Request) {
 		"risk":     "write",
 		"auth":     "Bearer token",
 		"required": []string{"goal", "source.kind", "sections", "generator"},
-		"privacy":  "accepts compacted sections only; no source transcript",
+		"privacy":  "accepts generated sections only; no source transcript",
 		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
 	})
 }
@@ -168,11 +169,11 @@ func (api *API) createSchema(response http.ResponseWriter, _ *http.Request) {
 func (api *API) compactSchema(response http.ResponseWriter, _ *http.Request) {
 	writeJSON(response, http.StatusOK, map[string]any{
 		"method":   "POST",
-		"path":     "/v1/handoffs/compact",
+		"path":     "/v1/handoffs/compact-preview",
 		"risk":     "write",
 		"auth":     "Bearer token",
-		"required": []string{"goal", "context.source", "context.messages"},
-		"privacy":  "explicit opt-in: sends retained source context to the server compactor",
+		"required": []string{"goal", "context.source", "context.summary or context.messages"},
+		"privacy":  "explicit opt-in: sends retained source context to the server compactor; returns sections without storing a handoff",
 		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
 	})
 }
@@ -232,8 +233,8 @@ func (api *API) compact(response http.ResponseWriter, request *http.Request) {
 	}
 	input.Goal = card.SanitizeGoal(input.Goal)
 	input.Context = card.SanitizeContext(input.Context)
-	if input.Goal == "" || input.Context.Source == "" || len(input.Context.Messages) == 0 {
-		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "goal, context.source, and context.messages are required"})
+	if input.Goal == "" || input.Context.Source == "" || !hasContext(input.Context) {
+		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "goal, context.source, and context summary or messages are required"})
 		return
 	}
 	ttl, err := api.resolveTTL(input.TTLSeconds)
@@ -249,9 +250,49 @@ func (api *API) compact(response http.ResponseWriter, request *http.Request) {
 	now := time.Now().UTC()
 	handoff, compactError := card.Build(request.Context(), api.Compactor, id, input.Goal, input.Context, now, now.Add(ttl))
 	if compactError != nil {
-		api.logger().Warn("model compaction unavailable; using deterministic handoff", "error", compactError)
+		api.logger().Warn("model generation unavailable; using deterministic handoff", "error", compactError)
 	}
 	api.saveCreated(response, handoff)
+}
+
+func (api *API) compactPreview(response http.ResponseWriter, request *http.Request) {
+	if !api.authorized(request) {
+		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "unauthorized"})
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, maxBodyBytes)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var input types.CompactRequest
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "invalid request: " + err.Error()})
+		return
+	}
+	if err := requireEOF(decoder); err != nil {
+		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "invalid request: " + err.Error()})
+		return
+	}
+	input.Goal = card.SanitizeGoal(input.Goal)
+	input.Context = card.SanitizeContext(input.Context)
+	if input.Goal == "" || input.Context.Source == "" || !hasContext(input.Context) {
+		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "goal, context.source, and context summary or messages are required"})
+		return
+	}
+	sections, generator, compactError := card.GenerateSections(request.Context(), api.Compactor, input.Goal, input.Context)
+	warning := ""
+	if api.Compactor == nil {
+		warning = "server compactor is not configured; deterministic sections were used"
+	} else if compactError != nil {
+		warning = card.Redact(compactError.Error())
+		api.logger().Warn("preview model generation unavailable; using deterministic handoff", "error", compactError)
+	}
+	writeJSON(response, http.StatusOK, types.CompactPreviewResponse{
+		Sections: sections, Generator: generator, Warning: warning,
+	})
+}
+
+func hasContext(input types.Context) bool {
+	return strings.TrimSpace(input.Summary) != "" || len(input.Messages) > 0
 }
 
 func (api *API) saveCreated(response http.ResponseWriter, handoff types.Handoff) {
@@ -374,7 +415,7 @@ func (api *API) logRequests(next http.Handler) http.Handler {
 }
 
 func safeLogPath(path string) string {
-	if path == "/v1/handoffs/compact" {
+	if path == "/v1/handoffs/compact" || path == "/v1/handoffs/compact-preview" {
 		return path
 	}
 	if strings.HasPrefix(path, "/v1/handoffs/") {

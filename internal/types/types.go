@@ -18,23 +18,32 @@ type Repository struct {
 }
 
 type Context struct {
-	Source    string     `json:"source"`
-	SessionID string     `json:"session_id,omitempty"`
-	Cursor    string     `json:"cursor,omitempty"`
-	CWD       string     `json:"cwd,omitempty"`
-	UpdatedAt time.Time  `json:"updated_at,omitempty"`
-	Summary   string     `json:"summary,omitempty"`
-	Messages  []Message  `json:"messages"`
-	Repo      Repository `json:"repository,omitempty"`
+	Source             string     `json:"source"`
+	SessionID          string     `json:"session_id,omitempty"`
+	Cursor             string     `json:"cursor,omitempty"`
+	CWD                string     `json:"cwd,omitempty"`
+	UpdatedAt          time.Time  `json:"updated_at,omitempty"`
+	Summary            string     `json:"summary,omitempty"`
+	NativeCompactFound bool       `json:"native_compact_found,omitempty"`
+	Messages           []Message  `json:"messages"`
+	Repo               Repository `json:"repository,omitempty"`
 }
 
-// CompactRequest asks the handoff server to compact raw context. It is kept as
-// an explicit opt-in path; the CLI normally compacts with the current Agent and
-// publishes only Sections.
+// CompactRequest asks the handoff server to generate sections from retained
+// context. It is an explicit opt-in path; the CLI normally uses the current
+// Agent and publishes only Sections.
 type CompactRequest struct {
 	Goal       string  `json:"goal"`
 	Context    Context `json:"context"`
 	TTLSeconds int64   `json:"ttl_seconds,omitempty"`
+}
+
+// CompactPreviewResponse returns generated sections without publishing a
+// handoff. This lets the CLI review and edit the artifact before it is stored.
+type CompactPreviewResponse struct {
+	Sections  Sections `json:"sections"`
+	Generator string   `json:"generator"`
+	Warning   string   `json:"warning,omitempty"`
 }
 
 type Sections struct {
@@ -56,7 +65,7 @@ type SourceRef struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
-// PublishRequest contains only the compacted handoff contract. It never
+// PublishRequest contains only the generated handoff contract. It never
 // contains the source transcript.
 type PublishRequest struct {
 	Goal       string    `json:"goal"`

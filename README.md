@@ -6,16 +6,16 @@
 当前 Session（只读快照，不执行 /compact）
                  │
                  ▼
-       handoff 本地脱敏 + 临时子调用
+       handoff 本地脱敏 + 读取原生 summary/tail
                  │  复用当前 Agent 的登录、配置、默认模型
                  ▼
          结构化 handoff sections
-                 │  只上传压缩结果
+                 │  默认只上传最终 sections
                  ▼
         handoffd 存储 / 分享 HANDOFF.md
 ```
 
-默认不需要配置模型、API key、provider 或模型地址。比如从 Codex 中调用时，CLI 会执行一次全新的 `codex exec --ephemeral`；它沿用 Codex 已有认证与默认模型，但不会 resume、compact 或改写来源 Session。Claude Code 和 Pi 使用同样的无状态子调用思路。
+默认不需要配置模型、API key、provider 或模型地址。比如从 Codex 中调用时，CLI 会执行一次全新的 `codex exec --ephemeral`；它沿用 Codex 已有认证与默认模型，但不会 resume、compact 或改写来源 Session。Claude Code 和 Pi 使用同样的无状态子调用思路。这个行为叫 `--mode agent`，不是原生 `/compact`。
 
 ## 用起来
 
@@ -44,11 +44,14 @@ handoff create "让同事继续完成 CLI 部署"
 #
 # 未安装时，请[查看安装方法](https://github.com/open-grove/handoff)。
 
-# 可选：不调用 Agent，生成确定性本地摘要
-handoff create "continue" --compact none
+# 可选：生成后在编辑器里检查 Markdown，保存关闭后才发布
+handoff create "continue" --review
 
-# 可选：明确同意把保留后的上下文交给 handoffd 压缩
-handoff create "continue" --compact server
+# 可选：不调用 Agent，使用确定性本地提取
+handoff create "continue" --mode local
+
+# 可选：明确同意把保留后的上下文交给 handoffd / Agent Plan 生成
+handoff create "continue" --mode server --include-transcript
 
 # 任何 Agent 都能用的通用入口
 some-agent-export | handoff create "continue the investigation"
@@ -90,7 +93,7 @@ handoff doctor
 
 | 命令 | 风险 | 作用 |
 |---|---:|---|
-| `handoff create "goal"` | write | 只读上下文，由当前 Agent 临时压缩，只上传 sections |
+| `handoff create "goal"` | write | 只读上下文，由当前 Agent 生成，默认只上传 sections |
 | `handoff receive <reference>` | read | 接受 branded reference、分享码、人类页面或 `.md` URL |
 | `handoff delete <code> --yes` | high-risk-write | 在 TTL 到期前删除交接卡 |
 | `handoff auth login/status/logout` | write/read/write | 管理服务凭据 |
@@ -110,18 +113,26 @@ handoff doctor
 - Pi：`~/.pi/agent/sessions/**/*.jsonl` 或 `~/.pi/sessions/**/*.jsonl`
 - 永久可用的通用逃生口：stdin 和 `--file`
 
-只提取和传递 user / assistant 文本，不提取 thinking、tool result 或原生凭据。Codex Session 已有 compact summary 时会一起利用。
+只提取 user / assistant 文本，不提取 thinking、tool result 或原生凭据。若提供者把原生 compact summary 明文写入 Session，输入会自动收敛为“最新 summary + 被保留的后续消息”：
 
-`--compact current` 是默认值。`--agent auto` 会优先识别正在承载命令的 Agent，其次使用 Session 来源；也可用 `--agent codex|claude|pi` 解决特殊终端环境里的识别问题。这个参数只选择运行时，始终不选择模型。
+- Claude Code：读取 `isCompactSummary` 消息，并只保留其后的消息。
+- Pi：读取 compaction summary 和 `firstKeptEntryId` 对应的保留尾部。
+- Codex：可以检测 `compacted` 边界；当前版本把 compaction 内容加密写入 Session 文件，外部 CLI 无法读取时会保留脱敏后的可读消息，不会伪装成已复用 summary。
+
+没有可读原生 summary 时，CLI 使用脱敏、限长后的 Session 文本。`handoff create ... --dry-run` 会显示 `native_compact_found` 和 `native_summary_reused`。
+
+`--mode agent` 是默认值。`--agent auto` 会优先识别正在承载命令的 Agent，其次使用 Session 来源；也可用 `--agent codex|claude|pi` 解决特殊终端环境里的识别问题。这个参数只选择运行时，始终不选择模型。旧的 `--compact current|none|server` 仅作为兼容别名保留。
 
 ## 隐私与故障降级
 
 - CLI 在调用当前 Agent 前先脱敏：API key、Bearer token、密码、私钥块会被替换；服务端会再次清理最终 sections。
 - 本机绝对路径改写为 `$HOME` / `$WORKSPACE`。
-- 默认模式下，handoff 服务只收到压缩后的 sections，完整 Session 不会发给 handoffd；服务端只持久化最终交接卡。
-- “本地压缩”指压缩流程由本机当前 Agent CLI 发起。若当前 Agent 背后使用云模型，脱敏后的上下文仍会发送给该 Agent 已配置的模型服务商；不会另发给 handoffd 的模型。
+- 默认 `agent` 和 `local` 模式下，handoffd 只收到最终 sections，完整 Session 不会发给 handoffd；服务端只持久化最终交接卡。
+- `agent` 模式由本机当前 Agent CLI 发起。如果该 Agent 使用云模型，脱敏后的上下文仍会发送给它已配置的模型服务商，但不会另发给 handoffd 的模型。
+- `server` 模式必须显式同时提供 `--include-transcript`。handoffd 会用保留后的上下文生成 preview，但不存储原文；最终仍只持久化用户确认后的交接卡。
+- `--review` 会在发布前打开 `$VISUAL` / `$EDITOR` 中的 Markdown；保存关闭后才上传最终 sections。服务端模式为了生成 preview，原文上传发生在 review 之前。
 - 分享 ID 是 128-bit 随机 capability，默认 7 天过期，可以提前删除。
-- 当前 Agent 不可用时会生成 deterministic handoff 并明确提示，不会静默改用服务端压缩。
+- 当前 Agent 不可用时会生成 deterministic handoff 并明确提示，不会静默改用服务端生成。
 - 分享 URL 本身就是读取权限，不应发到公开频道。
 - `HANDOFF.md` 是一次不可变快照。发送方和接收方的 Agent 不会共同修改同一份文件；继续工作后再创建下一份 handoff。
 
@@ -134,7 +145,7 @@ set -a; . ./.env; set +a
 go run ./cmd/handoffd
 ```
 
-默认模式无需配置火山方舟。只有团队明确使用 `--compact server` 时，才需要为 handoffd 配置 [方舟 Agent Plan](https://www.volcengine.com/docs/82379/2373738?lang=zh)：
+默认模式无需配置火山方舟。只有团队明确使用 `--mode server --include-transcript` 时，才需要为 handoffd 配置 [方舟 Agent Plan](https://www.volcengine.com/docs/82379/2373738?lang=zh)：
 
 ```dotenv
 ARK_AGENT_PLAN_BASE_URL=https://ark.cn-beijing.volces.com/api/plan
@@ -150,7 +161,8 @@ HTTP API：
 GET    /healthz
 GET    /v1/schema/create
 POST   /v1/handoffs        Authorization: Bearer <token>
-POST   /v1/handoffs/compact Authorization: Bearer <token>  显式服务端压缩
+POST   /v1/handoffs/compact-preview Authorization: Bearer <token>  只生成 sections，不存储
+POST   /v1/handoffs/compact Authorization: Bearer <token>  兼容旧客户端：生成并发布
 GET    /v1/handoffs/:id
 DELETE /v1/handoffs/:id    Authorization: Bearer <token>
 GET    /h/:id              Markdown 渲染的人类页面
