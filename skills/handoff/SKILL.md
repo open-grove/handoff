@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Package or receive compact Agent context as an immutable HANDOFF.md across Codex, Claude Code, Pi, people, and sessions. Use when the user asks to hand off, transfer, share, continue elsewhere, receive, inspect, or delete task context; provides a handoff code or URL; or pastes an OpenGrove notification containing `For Human`, `For Agent`, or `opengrove-handoff` with a share code.
+description: Package or receive audience-aware Agent context as an immutable HANDOFF.md across Codex, Claude Code, Pi, people, and sessions. Use when the user asks to hand off, transfer, share, continue elsewhere, receive, inspect, or delete task context; provides a handoff code or URL; or pastes an OpenGrove notification containing `For Human`, `For Agent`, or `opengrove-handoff` with a share code.
 ---
 
 # Handoff
@@ -22,6 +22,8 @@ handoff create "the next concrete goal"
 ```
 
 The default `--compact current` starts a new ephemeral invocation of the current Agent runtime. It reuses that runtime's existing authentication, configuration, and default model, but never resumes, compacts, or modifies the source session. Only compacted sections are uploaded to the handoff service.
+
+The generated Markdown has two audience layers. `For Human` contains a short plain-language project background, current situation, and todo list. `For Agent` preserves the operational goal, context, decisions, current state, important files, next steps, and open questions. Keep the human layer understandable without exposing unnecessary paths or implementation detail; keep the Agent layer precise enough to resume work.
 
 Use `--dry-run` to inspect the selected source, Agent, upload behavior, and TTL without calling an Agent or writing to the network:
 
@@ -51,7 +53,7 @@ handoff receive <code-or-url>
 handoff receive <code-or-url> --output HANDOFF.md
 ```
 
-When the user pastes `opengrove-handoff，分享码：<code>`, treat it as an explicit request to fetch and read that handoff. The branded CLI defaults to the OpenGrove service, so receiving a code or full URL requires no API token. First summarize the goal, decisions, current state, next steps, and open questions; then continue only within the user's requested scope.
+When the user pastes `opengrove-handoff，分享码：<code>`, treat it as an explicit request to fetch and read that handoff. The branded CLI defaults to the OpenGrove service, so receiving a code or full URL requires no API token. Present the `For Human` project background, current situation, and todos first. Use `For Agent` to recover exact decisions, state, files, next steps, and open questions before continuing within the user's requested scope.
 
 The CLI's share message deliberately has two parts. `For Human` links the handoff title to a browser page and requires no Handoff installation. `For Agent` contains the stable instruction `请使用 opengrove-handoff 读取内容，分享码：<code>`; pass that instruction or its code to `handoff receive`. If the user provides the whole message, prefer the branded code so it uses the CLI's configured OpenGrove service. A full `/h/<code>` or `.md` URL remains a valid fallback and also identifies the source server.
 

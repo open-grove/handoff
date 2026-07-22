@@ -2,7 +2,7 @@ package skills
 
 import _ "embed"
 
-const Version = "0.5.1"
+const Version = "0.6.0"
 
 type Skill struct {
 	Name        string   `json:"name"`
@@ -25,7 +25,7 @@ var handoffMarkdown string
 
 var handoff = Skill{
 	Name:        "handoff",
-	Description: "Package current Agent context into a compact HANDOFF.md for another person, Agent, or session.",
+	Description: "Package current Agent context into an audience-aware HANDOFF.md for another person, Agent, or session.",
 	Version:     Version,
 	Metadata: Metadata{
 		CLIHelp:  "handoff --help; handoff schema <command>",

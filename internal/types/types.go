@@ -2,7 +2,7 @@ package types
 
 import "time"
 
-const ProtocolVersion = 2
+const ProtocolVersion = 3
 
 type Message struct {
 	Role string    `json:"role"`
@@ -38,12 +38,15 @@ type CompactRequest struct {
 }
 
 type Sections struct {
-	Context        string   `json:"context"`
-	Decisions      []string `json:"decisions"`
-	CurrentState   string   `json:"current_state"`
-	ImportantFiles []string `json:"important_files"`
-	NextSteps      []string `json:"next_steps"`
-	OpenQuestions  []string `json:"open_questions"`
+	HumanBackground string   `json:"human_background,omitempty"`
+	HumanStatus     string   `json:"human_status,omitempty"`
+	HumanTodos      []string `json:"human_todos,omitempty"`
+	Context         string   `json:"context"`
+	Decisions       []string `json:"decisions"`
+	CurrentState    string   `json:"current_state"`
+	ImportantFiles  []string `json:"important_files"`
+	NextSteps       []string `json:"next_steps"`
+	OpenQuestions   []string `json:"open_questions"`
 }
 
 type SourceRef struct {

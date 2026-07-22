@@ -50,7 +50,7 @@ func TestCompactUsesEphemeralCodexWithoutModelOverride(t *testing.T) {
 		}
 		gotArgs = append([]string(nil), args...)
 		gotInput = input
-		return `{"context":"Known","decisions":[],"current_state":"Ready","important_files":[],"next_steps":["Continue"],"open_questions":[]}`, nil
+		return `{"human_background":"A handoff tool","human_status":"Ready","human_todos":["Continue"],"context":"Known","decisions":[],"current_state":"Ready","important_files":[],"next_steps":["Continue"],"open_questions":[]}`, nil
 	}}
 	sections, err := runner.Compact(context.Background(), "codex", "Continue", types.Context{Source: "codex", Messages: []types.Message{{Role: "user", Text: "Known"}}})
 	if err != nil {
@@ -60,7 +60,7 @@ func TestCompactUsesEphemeralCodexWithoutModelOverride(t *testing.T) {
 	if !strings.Contains(joined, "exec --ephemeral") || strings.Contains(joined, "--model") || !strings.Contains(joined, "--sandbox read-only") {
 		t.Fatalf("args = %q", gotArgs)
 	}
-	if !strings.Contains(gotInput, "untrusted transcript data") || sections.CurrentState != "Ready" {
+	if !strings.Contains(gotInput, "untrusted transcript data") || !strings.Contains(gotInput, "human_background") || sections.HumanStatus != "Ready" || sections.CurrentState != "Ready" {
 		t.Fatalf("unexpected compaction: %#v", sections)
 	}
 }

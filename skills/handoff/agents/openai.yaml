@@ -1,4 +1,4 @@
 interface:
   display_name: "Handoff"
-  short_description: "Share or receive Agent context across people and sessions"
-  default_prompt: "Use $handoff to create or read a portable Agent context handoff."
+  short_description: "Share audience-aware Agent context across people and sessions"
+  default_prompt: "Use $handoff to create or read a portable handoff for people and Agents."

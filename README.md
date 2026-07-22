@@ -1,6 +1,6 @@
 # handoff
 
-`handoff` 是一个给人和 Agent 用的通用上下文交接 CLI。它不绑定 OpenGrove，也不复制 Codex / Claude 的原生 Session；它把当前上下文变成一份可编辑、可追溯、模型无关的 `HANDOFF.md`。
+`handoff` 是一个给人和 Agent 用的通用上下文交接 CLI。它不绑定 OpenGrove，也不复制 Codex / Claude 的原生 Session；它把当前上下文变成一份可阅读、可追溯、模型无关的 `HANDOFF.md`。
 
 ```text
 当前 Session（只读快照，不执行 /compact）
@@ -76,6 +76,15 @@ handoff doctor
 ```
 
 `handoff skills read handoff` 输出与当前 CLI 二进制同版本的 Agent Skill，采用与 lark-cli 相同的内嵌 Skill 思路，避免单独分发的说明与命令行为漂移。仓库中的 `skills/handoff` 也可以安装到 Codex 的 Skill 目录。
+
+## 一个文件，两层信息
+
+新生成的 `HANDOFF.md` 是一份不可变快照，但明确分成两部分：
+
+- `For Human`：用人话说清项目背景、当前情况和待办事项。默认简短，不堆文件路径、Session 元数据和实现细节。
+- `For Agent`：保留 Goal、Context、Decisions、Current State、Important Files、Next Steps 和 Open Questions，用来继续实际工作。
+
+浏览器分享页会先展示 `For Human`，并把 `For Agent` 默认收起；原始 `.md` 仍可直接打开或交给 Agent 读取。旧版 CLI 发布的六个 Agent 字段仍然可以被新服务端正常接收。
 
 ## CLI
 

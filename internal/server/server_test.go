@@ -88,7 +88,7 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	}
 	pageBody, _ := io.ReadAll(pageResponse.Body)
 	pageResponse.Body.Close()
-	if pageResponse.StatusCode != http.StatusOK || !strings.HasPrefix(pageResponse.Header.Get("Content-Type"), "text/html") || !strings.Contains(string(pageBody), "<h1>Handoff</h1>") {
+	if pageResponse.StatusCode != http.StatusOK || !strings.HasPrefix(pageResponse.Header.Get("Content-Type"), "text/html") || !strings.Contains(string(pageBody), "<h1>continue implementation</h1>") || !strings.Contains(string(pageBody), "FOR HUMAN") || !strings.Contains(string(pageBody), "FOR AGENT") {
 		t.Fatalf("unexpected human page: status=%d type=%q body=%s", pageResponse.StatusCode, pageResponse.Header.Get("Content-Type"), pageBody)
 	}
 

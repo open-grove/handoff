@@ -47,13 +47,43 @@ func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 	if handoff.Generator != "deterministic" {
 		t.Fatalf("generator = %q", handoff.Generator)
 	}
-	for _, heading := range []string{"## Goal", "## Context", "## Decisions", "## Current State", "## Important Files", "## Next Steps", "## Open Questions"} {
+	for _, heading := range []string{"# continue the CLI", "## For Human", "### 项目背景", "### 当前情况", "### 待办事项", "## For Agent", "### Goal", "### Context", "### Decisions", "### Current State", "### Important Files", "### Next Steps", "### Open Questions"} {
 		if !strings.Contains(handoff.Markdown, heading) {
 			t.Fatalf("handoff missing %s", heading)
 		}
 	}
-	if !strings.Contains(handoff.Markdown, "version: 2") || !strings.Contains(handoff.Markdown, "continue the CLI") {
+	if !strings.Contains(handoff.Markdown, "version: 3") || !strings.Contains(handoff.Markdown, "continue the CLI") {
 		t.Fatalf("unexpected handoff:\n%s", handoff.Markdown)
+	}
+}
+
+func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
+	now := time.Date(2026, 7, 22, 8, 0, 0, 0, time.UTC)
+	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", "继续交接工具", types.SourceRef{Kind: "codex"}, Sections{
+		HumanBackground: "让同事和 Agent 都能快速接手一个已有会话。",
+		HumanStatus:     "核心流程已经可用，正在优化分享页。",
+		HumanTodos:      []string{"上线新分享页", "请同事试用"},
+		Context:         "CLI and service are implemented.",
+		CurrentState:    "Tests pass.",
+		NextSteps:       []string{"Deploy"},
+	}, "agent:codex", now, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := HTML(handoff)
+	for _, expected := range []string{`class="panel human-panel"`, `class="panel agent-panel"`, "核心流程已经可用", "Agent 交接上下文", "abcdefghijklmnopqrstuv", "查看安装方法"} {
+		if !strings.Contains(page, expected) {
+			t.Fatalf("page missing %q: %s", expected, page)
+		}
+	}
+	if strings.Index(page, "核心流程已经可用") > strings.Index(page, "Agent 交接上下文") {
+		t.Fatal("human summary must appear before agent context")
+	}
+}
+
+func TestMarkdownTitleEscapesFormattingWithoutDroppingText(t *testing.T) {
+	if got := markdownTitle("Continue C# and [docs]"); got != `Continue C\# and \[docs\]` {
+		t.Fatalf("markdown title = %q", got)
 	}
 }
 
@@ -135,7 +165,7 @@ func TestAgentPlanCompactorUsesAnthropicCompatibleContract(t *testing.T) {
 		}
 		response.Header().Set("Content-Type", "application/json")
 		_, _ = response.Write([]byte(`{"content":[{"type":"text","text":"` +
-			`{\"context\":\"Known context\",\"decisions\":[],\"current_state\":\"Ready\",\"important_files\":[],\"next_steps\":[\"Continue\"],\"open_questions\":[]}` +
+			`{\"human_background\":\"A handoff tool\",\"human_status\":\"Ready\",\"human_todos\":[\"Continue\"],\"context\":\"Known context\",\"decisions\":[],\"current_state\":\"Ready\",\"important_files\":[],\"next_steps\":[\"Continue\"],\"open_questions\":[]}` +
 			`"}]}`))
 	}))
 	defer server.Close()
@@ -145,7 +175,7 @@ func TestAgentPlanCompactorUsesAnthropicCompatibleContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sections.Context != "Known context" || len(sections.NextSteps) != 1 {
+	if sections.HumanBackground != "A handoff tool" || sections.Context != "Known context" || len(sections.NextSteps) != 1 {
 		t.Fatalf("sections = %#v", sections)
 	}
 	if compactor.Generator() != "server:agent-plan" {
