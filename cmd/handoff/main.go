@@ -20,9 +20,10 @@ import (
 	"github.com/open-grove/handoff/internal/config"
 	"github.com/open-grove/handoff/internal/source"
 	"github.com/open-grove/handoff/internal/types"
+	skillbundle "github.com/open-grove/handoff/skills"
 )
 
-const version = "0.2.1"
+const version = skillbundle.Version
 
 const usage = `handoff — portable context for people and agents.
 
@@ -31,6 +32,7 @@ AGENT QUICKSTART:
   agent-export | handoff create "next goal"  Create from stdin
   handoff receive <code>                     Print a received HANDOFF.md
   handoff schema create                      Inspect the create contract
+  handoff skills read handoff                Read the version-matched Agent Skill
 
 Usage:
   handoff [--profile NAME] <command> [flags]
@@ -43,6 +45,7 @@ Commands:
   config       Show or update CLI configuration
   doctor       Check local source detection, auth, and connectivity   Risk: read
   schema       Print machine-readable command contracts               Risk: read
+  skills       List or read Agent Skills embedded in this CLI          Risk: read
   version      Print the CLI version
 
 Global flags:
@@ -67,9 +70,28 @@ func (values *stringList) Set(value string) error {
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		var structured *structuredError
+		if errors.As(err, &structured) {
+			_ = writeJSON(os.Stderr, structured.Payload)
+			os.Exit(structured.ExitCode)
+		}
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
+}
+
+type structuredError struct {
+	ExitCode int
+	Payload  map[string]any
+}
+
+func (err *structuredError) Error() string {
+	if envelope, ok := err.Payload["error"].(map[string]any); ok {
+		if message, ok := envelope["message"].(string); ok {
+			return message
+		}
+	}
+	return "command failed"
 }
 
 func run(args []string) error {
@@ -101,6 +123,8 @@ func run(args []string) error {
 		return runDoctor(*profileName, commandArgs)
 	case "schema":
 		return runSchema(commandArgs)
+	case "skills":
+		return runSkills(commandArgs)
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -319,8 +343,24 @@ func runDelete(profileName string, args []string) error {
 	if idArgument == "" && len(flags.Args()) == 1 {
 		idArgument = flags.Args()[0]
 	}
-	if idArgument == "" || len(flags.Args()) > 0 || !*yes {
+	if idArgument == "" || len(flags.Args()) > 0 {
 		return errors.New("usage: handoff delete <code> --yes")
+	}
+	id, _ := parseHandoffRef(idArgument)
+	if id == "" {
+		return errors.New("invalid handoff code or URL")
+	}
+	if !*yes {
+		return &structuredError{ExitCode: 10, Payload: map[string]any{
+			"ok": false,
+			"error": map[string]any{
+				"type":    "confirmation_required",
+				"subtype": "high_risk_write",
+				"message": "deleting a handoff is irreversible",
+				"hint":    "run `handoff delete <code> --yes` only after the user explicitly confirms the exact handoff",
+			},
+			"_meta": map[string]any{"envelope_version": "1.0", "risk": "high-risk-write", "danger": true},
+		}}
 	}
 	_, profile, err := loadProfile(profileName)
 	if err != nil {
@@ -328,10 +368,6 @@ func runDelete(profileName string, args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	id, _ := parseHandoffRef(idArgument)
-	if id == "" {
-		return errors.New("invalid handoff code or URL")
-	}
 	if err := (client.Client{Server: profile.Server, Token: profile.Token}).Delete(ctx, id); err != nil {
 		return err
 	}
@@ -490,25 +526,179 @@ func runDoctor(profileName string, args []string) error {
 }
 
 func runSchema(args []string) error {
-	if len(args) != 1 || args[0] != "create" {
-		return errors.New("usage: handoff schema create")
+	if len(args) > 1 {
+		return errors.New("usage: handoff schema [create|receive|delete]")
 	}
-	return printJSON(map[string]any{
-		"command": "handoff create \"next goal\"",
-		"risk":    "write",
-		"input": map[string]any{
-			"goal":    "required positional string",
-			"from":    []string{"auto", "codex", "claude", "pi", "stdin", "file"},
-			"compact": []string{"current (default)", "none", "server (explicit raw-context upload)"},
-			"agent":   []string{"auto", "codex", "claude", "pi"},
-			"ttl":     "duration; default 168h",
+	if len(args) == 0 {
+		return printJSON(map[string]any{
+			"ok":       true,
+			"commands": []string{"create", "receive", "delete"},
+			"hint":     "run `handoff schema <command>` for its JSON Schema contract",
+		})
+	}
+	contract, err := schemaContract(args[0])
+	if err != nil {
+		return err
+	}
+	return printJSON(contract)
+}
+
+func schemaContract(command string) (map[string]any, error) {
+	stringProperty := func(description string) map[string]any {
+		return map[string]any{"type": "string", "description": description}
+	}
+	booleanProperty := func(description string) map[string]any {
+		return map[string]any{"type": "boolean", "description": description}
+	}
+	meta := func(risk string) map[string]any {
+		return map[string]any{"envelope_version": "1.0", "risk": risk, "danger": risk == "high-risk-write"}
+	}
+	switch command {
+	case "create":
+		return map[string]any{
+			"name":        "handoff create",
+			"description": "Create an immutable handoff from a read-only context snapshot.",
+			"inputSchema": map[string]any{
+				"type": "object", "required": []string{"goal"}, "additionalProperties": false,
+				"properties": map[string]any{
+					"goal":    stringProperty("The next concrete goal for the receiver."),
+					"from":    map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto"},
+					"compact": map[string]any{"type": "string", "enum": []string{"current", "none", "server"}, "default": "current", "description": "server explicitly uploads retained source context; other modes upload sections only."},
+					"agent":   map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto", "description": "Selects an Agent runtime, never a model."},
+					"file":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable context file path."},
+					"stdin":   booleanProperty("Read context from stdin."),
+					"no_git":  booleanProperty("Omit repository metadata."),
+					"ttl":     map[string]any{"type": "string", "default": "168h", "description": "Go duration for the handoff lifetime."},
+					"json":    booleanProperty("Print machine-readable output."),
+					"dry_run": booleanProperty("Inspect source and upload behavior without an Agent or network write."),
+					"output":  stringProperty("Also write HANDOFF.md to this path."),
+					"force":   booleanProperty("Allow overwriting the output file."),
+				},
+			},
+			"outputSchema": createOutputSchema(),
+			"_meta": map[string]any{
+				"envelope_version": "1.0", "risk": "write", "danger": false,
+				"session":              "read-only snapshot; never compacted, resumed, or modified",
+				"default_upload":       "compacted sections only",
+				"default_model_config": "inherits the current Agent runtime",
+			},
+		}, nil
+	case "receive":
+		return map[string]any{
+			"name": "handoff receive", "description": "Fetch a handoff by capability code or URL.",
+			"inputSchema": map[string]any{
+				"type": "object", "required": []string{"code_or_url"}, "additionalProperties": false,
+				"properties": map[string]any{
+					"code_or_url": stringProperty("Handoff share code or full URL."),
+					"json":        booleanProperty("Print machine-readable output."),
+					"output":      stringProperty("Write Markdown to this path."),
+					"force":       booleanProperty("Allow overwriting the output file."),
+				},
+			},
+			"outputSchema": createOutputSchema(), "_meta": meta("read"),
+		}, nil
+	case "delete":
+		return map[string]any{
+			"name": "handoff delete", "description": "Permanently delete a handoff before expiry.",
+			"inputSchema": map[string]any{
+				"type": "object", "required": []string{"code_or_url", "yes"}, "additionalProperties": false,
+				"properties": map[string]any{
+					"code_or_url": stringProperty("Exact handoff share code or URL to delete."),
+					"yes":         map[string]any{"type": "boolean", "const": true, "description": "Explicit confirmation after user approval."},
+				},
+			},
+			"outputSchema": map[string]any{"type": "object", "required": []string{"deleted"}, "properties": map[string]any{"deleted": map[string]any{"type": "boolean", "const": true}}},
+			"_meta":        meta("high-risk-write"),
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown schema %q; expected create, receive, or delete", command)
+	}
+}
+
+func createOutputSchema() map[string]any {
+	return map[string]any{
+		"type": "object", "required": []string{"handoff"},
+		"properties": map[string]any{
+			"handoff": map[string]any{
+				"type": "object", "required": []string{"version", "id", "goal", "markdown", "generator", "created_at", "expires_at"},
+				"properties": map[string]any{
+					"version":    map[string]any{"type": "integer"},
+					"id":         map[string]any{"type": "string"},
+					"goal":       map[string]any{"type": "string"},
+					"markdown":   map[string]any{"type": "string"},
+					"generator":  map[string]any{"type": "string"},
+					"created_at": map[string]any{"type": "string", "format": "date-time"},
+					"expires_at": map[string]any{"type": "string", "format": "date-time"},
+				},
+			},
+			"share_url": map[string]any{"type": "string", "format": "uri"},
 		},
-		"model_config": "none; current mode inherits the Agent runtime's auth, config, and default model",
-		"session":      "read-only snapshot; source session is never compacted, resumed, or modified",
-		"upload":       "compacted sections only, unless --compact server is explicitly selected",
-		"output":       "versioned handoff JSON plus portable Markdown",
-		"dry_run":      "use --dry-run to inspect metadata without an Agent call or network write",
-	})
+	}
+}
+
+const skillsUsage = `Read Agent Skills embedded in the handoff CLI so instructions stay in sync with the binary.
+
+Usage:
+  handoff skills list [--json]
+  handoff skills read <name> [--json]
+`
+
+func runSkills(args []string) error {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		fmt.Print(skillsUsage)
+		return nil
+	}
+	switch args[0] {
+	case "list":
+		flags := flag.NewFlagSet("handoff skills list", flag.ContinueOnError)
+		flags.SetOutput(os.Stderr)
+		jsonOutput := flags.Bool("json", false, "print JSON")
+		if err := flags.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if len(flags.Args()) != 0 {
+			return errors.New("usage: handoff skills list [--json]")
+		}
+		available := skillbundle.List()
+		if *jsonOutput {
+			return printJSON(map[string]any{"ok": true, "skills": available, "count": len(available)})
+		}
+		for _, skill := range available {
+			fmt.Printf("%s\t%s\t%s\n", skill.Name, skill.Version, skill.Description)
+		}
+		return nil
+	case "read":
+		name, rest := leadingArgument(args[1:])
+		flags := flag.NewFlagSet("handoff skills read", flag.ContinueOnError)
+		flags.SetOutput(os.Stderr)
+		jsonOutput := flags.Bool("json", false, "print JSON")
+		if err := flags.Parse(rest); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if name == "" && len(flags.Args()) == 1 {
+			name = flags.Args()[0]
+		}
+		if name == "" || len(flags.Args()) > 0 {
+			return errors.New("usage: handoff skills read <name> [--json]")
+		}
+		content, ok := skillbundle.Read(name)
+		if !ok {
+			return fmt.Errorf("unknown skill %q; run `handoff skills list`", name)
+		}
+		if *jsonOutput {
+			return printJSON(map[string]any{"ok": true, "name": name, "content": content})
+		}
+		fmt.Print(content)
+		return nil
+	default:
+		return fmt.Errorf("unknown skills command %q; run `handoff skills --help`", args[0])
+	}
 }
 
 func loadProfile(name string) (string, config.Profile, error) {
@@ -594,7 +784,11 @@ func writeOutput(path, value string, force bool) error {
 }
 
 func printJSON(value any) error {
-	encoder := json.NewEncoder(os.Stdout)
+	return writeJSON(os.Stdout, value)
+}
+
+func writeJSON(writer io.Writer, value any) error {
+	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
 	encoder.SetEscapeHTML(false)
 	return encoder.Encode(value)

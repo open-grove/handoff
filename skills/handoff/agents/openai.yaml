@@ -1,0 +1,4 @@
+interface:
+  display_name: "Handoff"
+  short_description: "Share compact Agent context across people and sessions"
+  default_prompt: "Use $handoff to package this task context for another person or Agent."

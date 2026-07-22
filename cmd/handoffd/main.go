@@ -34,7 +34,7 @@ func main() {
 	var compactor card.Compactor
 	agentPlanBaseURL := envOr("ARK_AGENT_PLAN_BASE_URL", "https://ark.cn-beijing.volces.com/api/plan")
 	agentPlanAPIKey := strings.TrimSpace(os.Getenv("ARK_AGENT_PLAN_API_KEY"))
-	agentPlanModel := envOr("ARK_AGENT_PLAN_MODEL", "ark-code-latest")
+	agentPlanModel := envOr("ARK_AGENT_PLAN_MODEL", "kimi-k3")
 	if agentPlanAPIKey != "" {
 		compactor = card.AgentPlanCompactor{BaseURL: agentPlanBaseURL, APIKey: agentPlanAPIKey, Model: agentPlanModel}
 	} else {

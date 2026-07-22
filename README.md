@@ -49,9 +49,15 @@ Agent 可先查合同，不用猜参数：
 
 ```bash
 handoff schema create
+handoff schema receive
+handoff schema delete
+handoff skills list
+handoff skills read handoff
 handoff create "next goal" --dry-run
 handoff doctor
 ```
+
+`handoff skills read handoff` 输出与当前 CLI 二进制同版本的 Agent Skill，采用与 lark-cli 相同的内嵌 Skill 思路，避免单独分发的说明与命令行为漂移。仓库中的 `skills/handoff` 也可以安装到 Codex 的 Skill 目录。
 
 ## CLI
 
@@ -63,6 +69,8 @@ handoff doctor
 | `handoff auth login/status/logout` | write/read/write | 管理服务凭据 |
 | `handoff config show/set-server` | read/write | 管理 profile |
 | `handoff doctor [--offline]` | read | 检查会话发现、凭据和服务连通性 |
+| `handoff schema [command]` | read | 输出 create / receive / delete 的 JSON Schema 合同 |
+| `handoff skills list/read` | read | 列出或读取二进制内嵌的 Agent Skill |
 
 所有命令支持根级 `--profile NAME`。`create` / `receive` 支持 `--json`。写文件默认不覆盖，显式加 `--force` 才会覆盖。
 
@@ -104,7 +112,7 @@ go run ./cmd/handoffd
 ```dotenv
 ARK_AGENT_PLAN_BASE_URL=https://ark.cn-beijing.volces.com/api/plan
 ARK_AGENT_PLAN_API_KEY=...
-ARK_AGENT_PLAN_MODEL=ark-code-latest
+ARK_AGENT_PLAN_MODEL=kimi-k3
 ```
 
 服务端通过 Agent Plan 的 Anthropic-compatible `/v1/messages` 接口生成 sections。必须使用 Agent Plan 专属 key；普通 ModelArk key 和 Coding Plan key 不可混用。
