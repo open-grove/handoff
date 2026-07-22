@@ -23,11 +23,13 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
 
-	input := types.CreateRequest{
-		Goal: "continue implementation",
-		Context: types.Context{
-			Source:   "stdin",
-			Messages: []types.Message{{Role: "user", Text: "api_key=super-secret-value\nparser is complete"}},
+	input := types.PublishRequest{
+		Goal:      "continue implementation",
+		Source:    types.SourceRef{Kind: "codex", SessionID: "session-1"},
+		Generator: "agent:codex",
+		Sections: types.Sections{
+			Context: "api_key=super-secret-value\nparser is complete", CurrentState: "Ready",
+			NextSteps: []string{"Continue"},
 		},
 	}
 	body, _ := json.Marshal(input)
@@ -67,8 +69,8 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(stored), "super-secret-value") || strings.Contains(string(stored), `"messages"`) {
-		t.Fatal("raw request or secret was persisted")
+	if strings.Contains(string(stored), "super-secret-value") || strings.Contains(string(stored), `"messages"`) || strings.Contains(string(stored), `"sections"`) {
+		t.Fatal("source request shape or secret was persisted")
 	}
 
 	getResponse, err := http.Get(server.URL + "/v1/handoffs/" + created.Handoff.ID)
@@ -111,5 +113,24 @@ func TestStoreExpiresHandoff(t *testing.T) {
 	}
 	if _, err := store.Get(handoff.ID); !os.IsNotExist(err) {
 		t.Fatalf("expired handoff returned: %v", err)
+	}
+}
+
+func TestDefaultPublishEndpointRejectsRawContext(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer((&API{Store: store, DefaultTTL: time.Hour}).Handler())
+	defer server.Close()
+
+	body := `{"goal":"continue","context":{"source":"stdin","messages":[{"role":"user","text":"raw transcript"}]}}`
+	response, err := http.Post(server.URL+"/v1/handoffs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("raw context status = %d", response.StatusCode)
 	}
 }

@@ -3,18 +3,19 @@
 `handoff` 是一个给人和 Agent 用的通用上下文交接 CLI。它不绑定 OpenGrove，也不复制 Codex / Claude 的原生 Session；它把当前上下文变成一份可编辑、可追溯、模型无关的 `HANDOFF.md`。
 
 ```text
-Codex / Claude / Pi / stdin / files
+当前 Session（只读快照，不执行 /compact）
                  │
                  ▼
-        handoff create "next goal"
-                 │  redact + compact
+       handoff 本地脱敏 + 临时子调用
+                 │  复用当前 Agent 的登录、配置、默认模型
                  ▼
-              handoffd
-                 │
-          code / URL / Markdown
+         结构化 handoff sections
+                 │  只上传压缩结果
                  ▼
-        handoff receive <code>
+        handoffd 存储 / 分享 HANDOFF.md
 ```
+
+默认不需要配置模型、API key、provider 或模型地址。比如从 Codex 中调用时，CLI 会执行一次全新的 `codex exec --ephemeral`；它沿用 Codex 已有认证与默认模型，但不会 resume、compact 或改写来源 Session。Claude Code 和 Pi 使用同样的无状态子调用思路。
 
 ## 用起来
 
@@ -27,6 +28,12 @@ printf '%s' "$HANDOFF_TOKEN" | \
 
 # 自动找当前工作区最近的 Codex / Claude / Pi Session
 handoff create "让同事继续完成 CLI 部署"
+
+# 可选：不调用 Agent，生成确定性本地摘要
+handoff create "continue" --compact none
+
+# 可选：明确同意把保留后的上下文交给 handoffd 压缩
+handoff create "continue" --compact server
 
 # 任何 Agent 都能用的通用入口
 some-agent-export | handoff create "continue the investigation"
@@ -50,7 +57,7 @@ handoff doctor
 
 | 命令 | 风险 | 作用 |
 |---|---:|---|
-| `handoff create "goal"` | write | 自动读取上下文、脱敏、compact 并上传交接卡 |
+| `handoff create "goal"` | write | 只读上下文，由当前 Agent 临时压缩，只上传 sections |
 | `handoff receive <code-or-url>` | read | 读取 Markdown；URL 会自动决定服务地址 |
 | `handoff delete <code> --yes` | high-risk-write | 在 TTL 到期前删除交接卡 |
 | `handoff auth login/status/logout` | write/read/write | 管理服务凭据 |
@@ -68,16 +75,20 @@ handoff doctor
 - Pi：`~/.pi/agent/sessions/**/*.jsonl` 或 `~/.pi/sessions/**/*.jsonl`
 - 永久可用的通用逃生口：stdin 和 `--file`
 
-只提取 user / assistant 文本，不上传 thinking、tool result 或原生凭据。Codex Session 已有 compact summary 时会一起利用。
+只提取和传递 user / assistant 文本，不提取 thinking、tool result 或原生凭据。Codex Session 已有 compact summary 时会一起利用。
+
+`--compact current` 是默认值。`--agent auto` 会优先识别正在承载命令的 Agent，其次使用 Session 来源；也可用 `--agent codex|claude|pi` 解决特殊终端环境里的识别问题。这个参数只选择运行时，始终不选择模型。
 
 ## 隐私与故障降级
 
-- CLI 和服务端各做一次脱敏：API key、Bearer token、密码、私钥块会被替换。
+- CLI 在调用当前 Agent 前先脱敏：API key、Bearer token、密码、私钥块会被替换；服务端会再次清理最终 sections。
 - 本机绝对路径改写为 `$HOME` / `$WORKSPACE`。
-- 服务端只持久化最终交接卡，不保存 create request 或原始 transcript。
+- 默认模式下，handoff 服务只收到压缩后的 sections，完整 Session 不会发给 handoffd；服务端只持久化最终交接卡。
+- “本地压缩”指压缩流程由本机当前 Agent CLI 发起。若当前 Agent 背后使用云模型，脱敏后的上下文仍会发送给该 Agent 已配置的模型服务商；不会另发给 handoffd 的模型。
 - 分享 ID 是 128-bit 随机 capability，默认 7 天过期，可以提前删除。
-- Ark 不可用时会生成 deterministic handoff，不让交接链路整体失败；CLI 会明确标记。
+- 当前 Agent 不可用时会生成 deterministic handoff 并明确提示，不会静默改用服务端压缩。
 - 分享 URL 本身就是读取权限，不应发到公开频道。
+- `HANDOFF.md` 是一次不可变快照。发送方和接收方的 Agent 不会共同修改同一份文件；继续工作后再创建下一份 handoff。
 
 ## 启动服务
 
@@ -88,7 +99,7 @@ set -a; . ./.env; set +a
 go run ./cmd/handoffd
 ```
 
-Ark 服务端推荐使用标准 ModelArk API，而不是个人 Coding Plan 网关：
+默认模式无需配置 Ark。只有团队明确使用 `--compact server` 时，才需要为 handoffd 配置标准 ModelArk API：
 
 ```dotenv
 ARK_API_BASE=https://ark.cn-beijing.volces.com/api/v3
@@ -102,6 +113,7 @@ HTTP API：
 GET    /healthz
 GET    /v1/schema/create
 POST   /v1/handoffs        Authorization: Bearer <token>
+POST   /v1/handoffs/compact Authorization: Bearer <token>  显式服务端压缩
 GET    /v1/handoffs/:id
 DELETE /v1/handoffs/:id    Authorization: Bearer <token>
 GET    /h/:id              只读网页

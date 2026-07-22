@@ -32,14 +32,7 @@ var homePathPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)[A-Z]:\\Users\\[^\\\s"']+`),
 }
 
-type Sections struct {
-	Context        string   `json:"context"`
-	Decisions      []string `json:"decisions"`
-	CurrentState   string   `json:"current_state"`
-	ImportantFiles []string `json:"important_files"`
-	NextSteps      []string `json:"next_steps"`
-	OpenQuestions  []string `json:"open_questions"`
-}
+type Sections = types.Sections
 
 type Compactor interface {
 	Compact(context.Context, string, types.Context) (Sections, error)
@@ -106,7 +99,7 @@ func Redact(input string) string {
 func Build(ctx context.Context, compactor Compactor, id, goal string, source types.Context, createdAt, expiresAt time.Time) (types.Handoff, error) {
 	goal = SanitizeGoal(goal)
 	source = SanitizeContext(source)
-	sections, generator := fallbackSections(goal, source), "deterministic"
+	sections, generator := FallbackSections(goal, source), "deterministic"
 	var compactError error
 	if compactor != nil {
 		if compacted, err := compactor.Compact(ctx, goal, source); err == nil && validSections(compacted) {
@@ -136,6 +129,41 @@ func Build(ctx context.Context, compactor Compactor, id, goal string, source typ
 	return handoff, compactError
 }
 
+// BuildFromSections creates the stored card from content already compacted by
+// the caller. The handoff server uses this path so it never needs the source
+// transcript during normal operation.
+func BuildFromSections(id, goal string, source types.SourceRef, sections Sections, generator string, createdAt, expiresAt time.Time) (types.Handoff, error) {
+	goal = SanitizeGoal(goal)
+	sections = sanitizeSections(sections)
+	if goal == "" {
+		return types.Handoff{}, fmt.Errorf("goal is required")
+	}
+	if !validSections(sections) {
+		return types.Handoff{}, fmt.Errorf("sections do not satisfy the handoff contract")
+	}
+	source.Kind = strings.TrimSpace(Redact(source.Kind))
+	source.SessionID = strings.TrimSpace(Redact(source.SessionID))
+	source.Cursor = strings.TrimSpace(Redact(source.Cursor))
+	if source.Kind == "" {
+		return types.Handoff{}, fmt.Errorf("source.kind is required")
+	}
+	generator = strings.TrimSpace(Redact(generator))
+	if generator == "" {
+		generator = "unknown"
+	}
+	handoff := types.Handoff{
+		Version:   types.ProtocolVersion,
+		ID:        id,
+		Goal:      goal,
+		Source:    source,
+		Generator: generator,
+		CreatedAt: createdAt,
+		ExpiresAt: expiresAt,
+	}
+	handoff.Markdown = Render(handoff, sections)
+	return handoff, nil
+}
+
 func Render(handoff types.Handoff, sections Sections) string {
 	var output strings.Builder
 	fmt.Fprintf(&output, "---\nversion: %d\nid: %s\nsource: %s\n", handoff.Version, yamlString(handoff.ID), yamlString(handoff.Source.Kind))
@@ -145,7 +173,7 @@ func Render(handoff types.Handoff, sections Sections) string {
 	if handoff.Source.Cursor != "" {
 		fmt.Fprintf(&output, "source_cursor: %s\n", yamlString(handoff.Source.Cursor))
 	}
-	fmt.Fprintf(&output, "created_at: %s\nexpires_at: %s\ngenerator: %s\n---\n\n", handoff.CreatedAt.Format(time.RFC3339), handoff.ExpiresAt.Format(time.RFC3339), handoff.Generator)
+	fmt.Fprintf(&output, "created_at: %s\nexpires_at: %s\ngenerator: %s\n---\n\n", handoff.CreatedAt.Format(time.RFC3339), handoff.ExpiresAt.Format(time.RFC3339), yamlString(handoff.Generator))
 	fmt.Fprintf(&output, "# Handoff\n\n## Goal\n\n%s\n\n", valueOrUnknown(handoff.Goal))
 	fmt.Fprintf(&output, "## Context\n\n%s\n\n", valueOrUnknown(sections.Context))
 	writeList(&output, "Decisions", sections.Decisions)
@@ -220,18 +248,14 @@ func (client ArkCompactor) Compact(ctx context.Context, goal string, source type
 	if len(completion.Choices) == 0 {
 		return Sections{}, fmt.Errorf("ark returned no choices")
 	}
-	content := extractJSONObject(completion.Choices[0].Message.Content)
-	if content == "" {
-		return Sections{}, fmt.Errorf("ark returned no JSON object")
-	}
-	var sections Sections
-	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &sections); err != nil {
+	sections, err := ParseSections(completion.Choices[0].Message.Content)
+	if err != nil {
 		return Sections{}, fmt.Errorf("parse compact result: %w", err)
 	}
-	return sanitizeSections(sections), nil
+	return sections, nil
 }
 
-func fallbackSections(goal string, source types.Context) Sections {
+func FallbackSections(goal string, source types.Context) Sections {
 	contextText := strings.TrimSpace(source.Summary)
 	if contextText == "" {
 		var transcript strings.Builder
@@ -256,6 +280,24 @@ func fallbackSections(goal string, source types.Context) Sections {
 		NextSteps:      []string{goal},
 		OpenQuestions:  []string{},
 	}
+}
+
+// ParseSections accepts a strict JSON result or a JSON object wrapped in
+// incidental model prose, then sanitizes and validates the contract.
+func ParseSections(value string) (Sections, error) {
+	content := extractJSONObject(value)
+	if content == "" {
+		return Sections{}, fmt.Errorf("no JSON object in Agent response")
+	}
+	var sections Sections
+	if err := json.Unmarshal([]byte(content), &sections); err != nil {
+		return Sections{}, fmt.Errorf("parse Agent response: %w", err)
+	}
+	sections = sanitizeSections(sections)
+	if !validSections(sections) {
+		return Sections{}, fmt.Errorf("Agent response did not satisfy the handoff contract")
+	}
+	return sections, nil
 }
 
 func sanitizeSections(input Sections) Sections {

@@ -38,7 +38,7 @@ func main() {
 	if arkBaseURL != "" && arkAPIKey != "" && arkModel != "" {
 		compactor = card.ArkCompactor{BaseURL: arkBaseURL, APIKey: arkAPIKey, Model: arkModel}
 	} else {
-		logger.Warn("model compaction disabled; deterministic handoffs remain available")
+		logger.Info("optional server compaction disabled; normal current-Agent publishing remains available")
 	}
 
 	api := &server.API{

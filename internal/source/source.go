@@ -292,7 +292,7 @@ func inspectRepository(cwd string) types.Repository {
 		Branch: commandOutput(root, "git", "branch", "--show-current"),
 		Commit: commandOutput(root, "git", "rev-parse", "--short=12", "HEAD"),
 	}
-	status := commandOutput(root, "git", "status", "--porcelain=v1", "--untracked-files=normal")
+	status := strings.TrimRight(commandOutputRaw(root, "git", "status", "--porcelain=v1", "--untracked-files=normal"), "\r\n")
 	for _, line := range strings.Split(status, "\n") {
 		if len(line) < 4 {
 			continue
@@ -312,6 +312,10 @@ func inspectRepository(cwd string) types.Repository {
 }
 
 func commandOutput(cwd, name string, args ...string) string {
+	return strings.TrimSpace(commandOutputRaw(cwd, name, args...))
+}
+
+func commandOutputRaw(cwd, name string, args ...string) string {
 	command := exec.Command(name, args...)
 	command.Dir = cwd
 	var stdout bytes.Buffer
@@ -320,7 +324,7 @@ func commandOutput(cwd, name string, args ...string) string {
 	if command.Run() != nil {
 		return ""
 	}
-	return strings.TrimSpace(stdout.String())
+	return stdout.String()
 }
 
 func contentText(value any) string {

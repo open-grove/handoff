@@ -2,7 +2,7 @@ package types
 
 import "time"
 
-const ProtocolVersion = 1
+const ProtocolVersion = 2
 
 type Message struct {
 	Role string    `json:"role"`
@@ -28,10 +28,22 @@ type Context struct {
 	Repo      Repository `json:"repository,omitempty"`
 }
 
-type CreateRequest struct {
+// CompactRequest asks the handoff server to compact raw context. It is kept as
+// an explicit opt-in path; the CLI normally compacts with the current Agent and
+// publishes only Sections.
+type CompactRequest struct {
 	Goal       string  `json:"goal"`
 	Context    Context `json:"context"`
 	TTLSeconds int64   `json:"ttl_seconds,omitempty"`
+}
+
+type Sections struct {
+	Context        string   `json:"context"`
+	Decisions      []string `json:"decisions"`
+	CurrentState   string   `json:"current_state"`
+	ImportantFiles []string `json:"important_files"`
+	NextSteps      []string `json:"next_steps"`
+	OpenQuestions  []string `json:"open_questions"`
 }
 
 type SourceRef struct {
@@ -39,6 +51,16 @@ type SourceRef struct {
 	SessionID string    `json:"session_id,omitempty"`
 	Cursor    string    `json:"cursor,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// PublishRequest contains only the compacted handoff contract. It never
+// contains the source transcript.
+type PublishRequest struct {
+	Goal       string    `json:"goal"`
+	Source     SourceRef `json:"source"`
+	Sections   Sections  `json:"sections"`
+	Generator  string    `json:"generator"`
+	TTLSeconds int64     `json:"ttl_seconds,omitempty"`
 }
 
 type Handoff struct {

@@ -135,7 +135,9 @@ func (api *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("GET /v1/schema/create", api.createSchema)
-	mux.HandleFunc("POST /v1/handoffs", api.create)
+	mux.HandleFunc("GET /v1/schema/compact", api.compactSchema)
+	mux.HandleFunc("POST /v1/handoffs", api.publish)
+	mux.HandleFunc("POST /v1/handoffs/compact", api.compact)
 	mux.HandleFunc("GET /v1/handoffs/{id}", api.get)
 	mux.HandleFunc("DELETE /v1/handoffs/{id}", api.delete)
 	mux.HandleFunc("GET /h/{id}", api.page)
@@ -157,12 +159,25 @@ func (api *API) createSchema(response http.ResponseWriter, _ *http.Request) {
 		"path":     "/v1/handoffs",
 		"risk":     "write",
 		"auth":     "Bearer token",
-		"required": []string{"goal", "context.source", "context.messages"},
+		"required": []string{"goal", "source.kind", "sections", "generator"},
+		"privacy":  "accepts compacted sections only; no source transcript",
 		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
 	})
 }
 
-func (api *API) create(response http.ResponseWriter, request *http.Request) {
+func (api *API) compactSchema(response http.ResponseWriter, _ *http.Request) {
+	writeJSON(response, http.StatusOK, map[string]any{
+		"method":   "POST",
+		"path":     "/v1/handoffs/compact",
+		"risk":     "write",
+		"auth":     "Bearer token",
+		"required": []string{"goal", "context.source", "context.messages"},
+		"privacy":  "explicit opt-in: sends retained source context to the server compactor",
+		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
+	})
+}
+
+func (api *API) publish(response http.ResponseWriter, request *http.Request) {
 	if !api.authorized(request) {
 		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "unauthorized"})
 		return
@@ -170,7 +185,43 @@ func (api *API) create(response http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(response, request.Body, maxBodyBytes)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
-	var input types.CreateRequest
+	var input types.PublishRequest
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "invalid request: " + err.Error()})
+		return
+	}
+	if err := requireEOF(decoder); err != nil {
+		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "invalid request: " + err.Error()})
+		return
+	}
+	ttl, err := api.resolveTTL(input.TTLSeconds)
+	if err != nil {
+		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: err.Error()})
+		return
+	}
+	id, err := randomID()
+	if err != nil {
+		writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not allocate handoff"})
+		return
+	}
+	now := time.Now().UTC()
+	handoff, err := card.BuildFromSections(id, input.Goal, input.Source, input.Sections, input.Generator, now, now.Add(ttl))
+	if err != nil {
+		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: err.Error()})
+		return
+	}
+	api.saveCreated(response, handoff)
+}
+
+func (api *API) compact(response http.ResponseWriter, request *http.Request) {
+	if !api.authorized(request) {
+		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "unauthorized"})
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, maxBodyBytes)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var input types.CompactRequest
 	if err := decoder.Decode(&input); err != nil {
 		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "invalid request: " + err.Error()})
 		return
@@ -185,12 +236,9 @@ func (api *API) create(response http.ResponseWriter, request *http.Request) {
 		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "goal, context.source, and context.messages are required"})
 		return
 	}
-	ttl := api.defaultTTL()
-	if input.TTLSeconds > 0 {
-		ttl = time.Duration(input.TTLSeconds) * time.Second
-	}
-	if ttl < 5*time.Minute || ttl > api.maxTTL() {
-		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: fmt.Sprintf("ttl must be between 5m and %s", api.maxTTL())})
+	ttl, err := api.resolveTTL(input.TTLSeconds)
+	if err != nil {
+		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: err.Error()})
 		return
 	}
 	id, err := randomID()
@@ -203,12 +251,16 @@ func (api *API) create(response http.ResponseWriter, request *http.Request) {
 	if compactError != nil {
 		api.logger().Warn("model compaction unavailable; using deterministic handoff", "error", compactError)
 	}
+	api.saveCreated(response, handoff)
+}
+
+func (api *API) saveCreated(response http.ResponseWriter, handoff types.Handoff) {
 	if err := api.Store.Save(handoff); err != nil {
 		api.logger().Error("save handoff", "error", err)
 		writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not save handoff"})
 		return
 	}
-	writeJSON(response, http.StatusCreated, types.CreateResponse{Handoff: handoff, ShareURL: api.shareURL(id)})
+	writeJSON(response, http.StatusCreated, types.CreateResponse{Handoff: handoff, ShareURL: api.shareURL(handoff.ID)})
 }
 
 func (api *API) get(response http.ResponseWriter, request *http.Request) {
@@ -269,6 +321,17 @@ func (api *API) maxTTL() time.Duration {
 		return api.MaxTTL
 	}
 	return 30 * 24 * time.Hour
+}
+
+func (api *API) resolveTTL(seconds int64) (time.Duration, error) {
+	ttl := api.defaultTTL()
+	if seconds > 0 {
+		ttl = time.Duration(seconds) * time.Second
+	}
+	if ttl < 5*time.Minute || ttl > api.maxTTL() {
+		return 0, fmt.Errorf("ttl must be between 5m and %s", api.maxTTL())
+	}
+	return ttl, nil
 }
 
 func (api *API) logger() *slog.Logger {

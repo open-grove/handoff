@@ -52,7 +52,7 @@ func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 			t.Fatalf("handoff missing %s", heading)
 		}
 	}
-	if !strings.Contains(handoff.Markdown, "version: 1") || !strings.Contains(handoff.Markdown, "continue the CLI") {
+	if !strings.Contains(handoff.Markdown, "version: 2") || !strings.Contains(handoff.Markdown, "continue the CLI") {
 		t.Fatalf("unexpected handoff:\n%s", handoff.Markdown)
 	}
 }

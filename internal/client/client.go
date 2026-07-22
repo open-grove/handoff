@@ -22,9 +22,15 @@ type Client struct {
 	HTTP   *http.Client
 }
 
-func (client Client) Create(ctx context.Context, input types.CreateRequest) (types.CreateResponse, error) {
+func (client Client) Publish(ctx context.Context, input types.PublishRequest) (types.CreateResponse, error) {
 	var output types.CreateResponse
 	err := client.request(ctx, http.MethodPost, "/v1/handoffs", input, &output)
+	return output, err
+}
+
+func (client Client) CompactOnServer(ctx context.Context, input types.CompactRequest) (types.CreateResponse, error) {
+	var output types.CreateResponse
+	err := client.request(ctx, http.MethodPost, "/v1/handoffs/compact", input, &output)
 	return output, err
 }
 
