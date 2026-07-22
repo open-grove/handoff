@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ import (
 )
 
 const version = skillbundle.Version
+
+var brandedHandoffRef = regexp.MustCompile(`(?i)opengrove-handoff\s*[,，]?\s*(?:分享码|code)\s*[:：]\s*([A-Za-z0-9_-]{20,32})`)
 
 const usage = `handoff — portable context for people and agents.
 
@@ -251,13 +254,16 @@ func runCreate(profileName string, args []string) error {
 	if *jsonOutput {
 		return printJSON(result)
 	}
-	fmt.Println("Handoff ready")
-	fmt.Println("Code:   " + result.Handoff.ID)
+	fmt.Println("opengrove-handoff，分享码：" + result.Handoff.ID)
 	if result.ShareURL != "" {
-		fmt.Println("Open:   " + result.ShareURL)
+		fmt.Println("查看交接：" + result.ShareURL)
 	}
-	fmt.Println("Get:    handoff receive " + result.Handoff.ID)
-	fmt.Println("Expiry: " + result.Handoff.ExpiresAt.Local().Format(time.RFC3339))
+	if result.MarkdownURL != "" {
+		fmt.Println("Markdown：" + result.MarkdownURL)
+	}
+	fmt.Println()
+	fmt.Println("复制第一行给 Agent，或打开链接直接查看。")
+	fmt.Println("有效期：" + result.Handoff.ExpiresAt.Local().Format(time.RFC3339))
 	if compactWarning != nil {
 		fmt.Println("Note:   current Agent was unavailable; used deterministic local compaction")
 		fmt.Println("Cause:  " + compactWarning.Error())
@@ -589,7 +595,7 @@ func schemaContract(command string) (map[string]any, error) {
 			"inputSchema": map[string]any{
 				"type": "object", "required": []string{"code_or_url"}, "additionalProperties": false,
 				"properties": map[string]any{
-					"code_or_url": stringProperty("Handoff share code or full URL."),
+					"code_or_url": stringProperty("Branded opengrove-handoff reference, share code, human URL, or raw Markdown URL."),
 					"json":        booleanProperty("Print machine-readable output."),
 					"output":      stringProperty("Write Markdown to this path."),
 					"force":       booleanProperty("Allow overwriting the output file."),
@@ -631,7 +637,8 @@ func createOutputSchema() map[string]any {
 					"expires_at": map[string]any{"type": "string", "format": "date-time"},
 				},
 			},
-			"share_url": map[string]any{"type": "string", "format": "uri"},
+			"share_url":    map[string]any{"type": "string", "format": "uri"},
+			"markdown_url": map[string]any{"type": "string", "format": "uri"},
 		},
 	}
 }
@@ -743,6 +750,9 @@ func contextCharacters(input types.Context) int {
 
 func parseHandoffRef(value string) (string, string) {
 	value = strings.TrimSpace(value)
+	if match := brandedHandoffRef.FindStringSubmatch(value); len(match) == 2 {
+		return match[1], ""
+	}
 	server := ""
 	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
 		server = parsed.Scheme + "://" + parsed.Host
@@ -750,6 +760,7 @@ func parseHandoffRef(value string) (string, string) {
 		if slash := strings.LastIndex(value, "/"); slash >= 0 {
 			value = value[slash+1:]
 		}
+		value = strings.TrimSuffix(value, ".md")
 	}
 	if len(value) < 20 || len(value) > 32 {
 		return "", ""

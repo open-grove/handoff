@@ -58,7 +58,7 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Handoff.ID) != 22 || !strings.Contains(created.ShareURL, created.Handoff.ID) {
+	if len(created.Handoff.ID) != 22 || !strings.Contains(created.ShareURL, created.Handoff.ID) || created.MarkdownURL != created.ShareURL+".md" {
 		t.Fatalf("unexpected create response: %#v", created)
 	}
 	if strings.Contains(created.Handoff.Markdown, "super-secret-value") {
@@ -80,6 +80,26 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	getResponse.Body.Close()
 	if getResponse.StatusCode != http.StatusOK {
 		t.Fatalf("get status = %d", getResponse.StatusCode)
+	}
+
+	pageResponse, err := http.Get(server.URL + "/h/" + created.Handoff.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageBody, _ := io.ReadAll(pageResponse.Body)
+	pageResponse.Body.Close()
+	if pageResponse.StatusCode != http.StatusOK || !strings.HasPrefix(pageResponse.Header.Get("Content-Type"), "text/html") || !strings.Contains(string(pageBody), "<h1>Handoff</h1>") {
+		t.Fatalf("unexpected human page: status=%d type=%q body=%s", pageResponse.StatusCode, pageResponse.Header.Get("Content-Type"), pageBody)
+	}
+
+	markdownResponse, err := http.Get(server.URL + "/h/" + created.Handoff.ID + ".md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	markdownBody, _ := io.ReadAll(markdownResponse.Body)
+	markdownResponse.Body.Close()
+	if markdownResponse.StatusCode != http.StatusOK || !strings.HasPrefix(markdownResponse.Header.Get("Content-Type"), "text/markdown") || string(markdownBody) != created.Handoff.Markdown {
+		t.Fatalf("unexpected Markdown response: status=%d type=%q", markdownResponse.StatusCode, markdownResponse.Header.Get("Content-Type"))
 	}
 
 	deleteRequest, _ := http.NewRequest(http.MethodDelete, server.URL+"/v1/handoffs/"+created.Handoff.ID, nil)

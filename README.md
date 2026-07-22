@@ -32,6 +32,11 @@ printf '%s' "$HANDOFF_TOKEN" | \
 # 自动找当前工作区最近的 Codex / Claude / Pi Session
 handoff create "让同事继续完成 CLI 部署"
 
+# 创建成功后输出一份可直接复制给 Agent 的引用：
+# opengrove-handoff，分享码：a-secure-share-code
+# 查看交接：https://handoff.example.com/h/a-secure-share-code
+# Markdown：https://handoff.example.com/h/a-secure-share-code.md
+
 # 可选：不调用 Agent，生成确定性本地摘要
 handoff create "continue" --compact none
 
@@ -42,9 +47,11 @@ handoff create "continue" --compact server
 some-agent-export | handoff create "continue the investigation"
 handoff create "continue" --file transcript.md --file decisions.md
 
-# 接收方可以用分享码，也可直接粘贴分享 URL
+# 接收方无需 Token，可以粘贴 branded reference、分享码或 URL
+handoff receive 'opengrove-handoff，分享码：a-secure-share-code'
 handoff receive a-secure-share-code
 handoff receive https://handoff.example.com/h/a-secure-share-code
+handoff receive https://handoff.example.com/h/a-secure-share-code.md
 handoff receive a-secure-share-code --output HANDOFF.md
 ```
 
@@ -67,7 +74,7 @@ handoff doctor
 | 命令 | 风险 | 作用 |
 |---|---:|---|
 | `handoff create "goal"` | write | 只读上下文，由当前 Agent 临时压缩，只上传 sections |
-| `handoff receive <code-or-url>` | read | 读取 Markdown；URL 会自动决定服务地址 |
+| `handoff receive <reference>` | read | 接受 branded reference、分享码、人类页面或 `.md` URL |
 | `handoff delete <code> --yes` | high-risk-write | 在 TTL 到期前删除交接卡 |
 | `handoff auth login/status/logout` | write/read/write | 管理服务凭据 |
 | `handoff config show/set-server` | read/write | 管理 profile |
@@ -75,7 +82,7 @@ handoff doctor
 | `handoff schema [command]` | read | 输出 create / receive / delete 的 JSON Schema 合同 |
 | `handoff skills list/read` | read | 列出或读取二进制内嵌的 Agent Skill |
 
-所有命令支持根级 `--profile NAME`。`create` / `receive` 支持 `--json`。写文件默认不覆盖，显式加 `--force` 才会覆盖。
+所有命令支持根级 `--profile NAME`。`create` / `receive` 支持 `--json`。写文件默认不覆盖，显式加 `--force` 才会覆盖。裸分享码默认从 OpenGrove 线上服务读取；profile、`HANDOFF_SERVER` 或完整 URL 可以覆盖服务地址。
 
 ## 上下文发现
 
@@ -129,7 +136,8 @@ POST   /v1/handoffs        Authorization: Bearer <token>
 POST   /v1/handoffs/compact Authorization: Bearer <token>  显式服务端压缩
 GET    /v1/handoffs/:id
 DELETE /v1/handoffs/:id    Authorization: Bearer <token>
-GET    /h/:id              只读网页
+GET    /h/:id              Markdown 渲染的人类页面
+GET    /h/:id.md           原始 HANDOFF.md
 ```
 
 ## 部署到火山云 ECS

@@ -57,6 +57,20 @@ func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 	}
 }
 
+func TestHTMLRendersMarkdownWithoutRawHTML(t *testing.T) {
+	page := HTML(types.Handoff{
+		Goal:      "Continue safely",
+		Markdown:  "# Handoff\n\n## Current State\n\nReady.\n\n<script>alert('no')</script>",
+		ExpiresAt: time.Date(2026, 7, 29, 8, 0, 0, 0, time.UTC),
+	})
+	if !strings.Contains(page, "<h1>Handoff</h1>") || !strings.Contains(page, "<h2>Current State</h2>") {
+		t.Fatalf("Markdown was not rendered: %s", page)
+	}
+	if strings.Contains(page, "<script>") {
+		t.Fatalf("raw HTML was rendered: %s", page)
+	}
+}
+
 type invalidCompactor struct{}
 
 func (invalidCompactor) Compact(context.Context, string, types.Context) (Sections, error) {

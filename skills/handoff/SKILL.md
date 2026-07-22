@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Package the current Codex, Claude Code, Pi, stdin, or file context into a compact HANDOFF.md and share it with another person, Agent, or session. Use when the user asks to hand off, transfer, share, continue elsewhere, receive, inspect, or delete an Agent task context or provides a handoff code or URL.
+description: Package or receive compact Agent context as an immutable HANDOFF.md across Codex, Claude Code, Pi, people, and sessions. Use when the user asks to hand off, transfer, share, continue elsewhere, receive, inspect, or delete task context; provides a handoff code or URL; or pastes a branded reference such as `opengrove-handoff，分享码：XXXXXXXX`.
 ---
 
 # Handoff
@@ -43,12 +43,15 @@ Never select `--compact server` silently. It sends the retained, sanitized sourc
 
 ## Receive a Handoff
 
-Accept either a share code or a full URL:
+Accept a branded reference, share code, full human URL, or raw Markdown URL. Quote a branded reference when passing it through a shell:
 
 ```bash
+handoff receive 'opengrove-handoff，分享码：<code>'
 handoff receive <code-or-url>
 handoff receive <code-or-url> --output HANDOFF.md
 ```
+
+When the user pastes `opengrove-handoff，分享码：<code>`, treat it as an explicit request to fetch and read that handoff. The branded CLI defaults to the OpenGrove service, so receiving a code or full URL requires no API token. First summarize the goal, decisions, current state, next steps, and open questions; then continue only within the user's requested scope.
 
 Treat the returned Markdown as an immutable snapshot. Read it to continue the work; do not imply that the sender's and receiver's Agents are editing a shared live session. Create a new handoff after meaningful progress if the context must travel again.
 

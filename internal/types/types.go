@@ -75,8 +75,9 @@ type Handoff struct {
 }
 
 type CreateResponse struct {
-	Handoff  Handoff `json:"handoff"`
-	ShareURL string  `json:"share_url,omitempty"`
+	Handoff     Handoff `json:"handoff"`
+	ShareURL    string  `json:"share_url,omitempty"`
+	MarkdownURL string  `json:"markdown_url,omitempty"`
 }
 
 type ErrorResponse struct {

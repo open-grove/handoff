@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const defaultServer = "http://127.0.0.1:7391"
+const defaultServer = "https://legacy-origin.example"
 
 type Profile struct {
 	Server string `json:"server"`

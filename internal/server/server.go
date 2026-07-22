@@ -260,7 +260,7 @@ func (api *API) saveCreated(response http.ResponseWriter, handoff types.Handoff)
 		writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not save handoff"})
 		return
 	}
-	writeJSON(response, http.StatusCreated, types.CreateResponse{Handoff: handoff, ShareURL: api.shareURL(handoff.ID)})
+	writeJSON(response, http.StatusCreated, api.createResponse(handoff))
 }
 
 func (api *API) get(response http.ResponseWriter, request *http.Request) {
@@ -269,7 +269,7 @@ func (api *API) get(response http.ResponseWriter, request *http.Request) {
 		writeJSON(response, http.StatusNotFound, types.ErrorResponse{Error: "handoff not found or expired"})
 		return
 	}
-	writeJSON(response, http.StatusOK, types.CreateResponse{Handoff: handoff, ShareURL: api.shareURL(handoff.ID)})
+	writeJSON(response, http.StatusOK, api.createResponse(handoff))
 }
 
 func (api *API) delete(response http.ResponseWriter, request *http.Request) {
@@ -285,9 +285,18 @@ func (api *API) delete(response http.ResponseWriter, request *http.Request) {
 }
 
 func (api *API) page(response http.ResponseWriter, request *http.Request) {
-	handoff, err := api.Store.Get(request.PathValue("id"))
+	reference := request.PathValue("id")
+	rawMarkdown := strings.HasSuffix(reference, ".md")
+	id := strings.TrimSuffix(reference, ".md")
+	handoff, err := api.Store.Get(id)
 	if err != nil {
 		http.NotFound(response, request)
+		return
+	}
+	if rawMarkdown {
+		response.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		response.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"handoff-%s.md\"", id))
+		_, _ = io.WriteString(response, handoff.Markdown)
 		return
 	}
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -307,6 +316,21 @@ func (api *API) shareURL(id string) string {
 		return ""
 	}
 	return strings.TrimRight(api.PublicURL, "/") + "/h/" + id
+}
+
+func (api *API) markdownURL(id string) string {
+	if shareURL := api.shareURL(id); shareURL != "" {
+		return shareURL + ".md"
+	}
+	return ""
+}
+
+func (api *API) createResponse(handoff types.Handoff) types.CreateResponse {
+	return types.CreateResponse{
+		Handoff:     handoff,
+		ShareURL:    api.shareURL(handoff.ID),
+		MarkdownURL: api.markdownURL(handoff.ID),
+	}
 }
 
 func (api *API) defaultTTL() time.Duration {
