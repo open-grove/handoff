@@ -1,0 +1,115 @@
+package server
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/open-grove/handoff/internal/types"
+)
+
+func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &API{Store: store, Token: "create-token", PublicURL: "https://handoff.example", DefaultTTL: time.Hour}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+
+	input := types.CreateRequest{
+		Goal: "continue implementation",
+		Context: types.Context{
+			Source:   "stdin",
+			Messages: []types.Message{{Role: "user", Text: "api_key=super-secret-value\nparser is complete"}},
+		},
+	}
+	body, _ := json.Marshal(input)
+	unauthorized, err := http.Post(server.URL+"/v1/handoffs", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorized.Body.Close()
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", unauthorized.StatusCode)
+	}
+
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/handoffs", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer create-token")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(response.Body)
+		t.Fatalf("create status = %d: %s", response.StatusCode, data)
+	}
+	var created types.CreateResponse
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Handoff.ID) != 22 || !strings.Contains(created.ShareURL, created.Handoff.ID) {
+		t.Fatalf("unexpected create response: %#v", created)
+	}
+	if strings.Contains(created.Handoff.Markdown, "super-secret-value") {
+		t.Fatal("secret leaked into handoff")
+	}
+
+	stored, err := os.ReadFile(store.path(created.Handoff.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stored), "super-secret-value") || strings.Contains(string(stored), `"messages"`) {
+		t.Fatal("raw request or secret was persisted")
+	}
+
+	getResponse, err := http.Get(server.URL + "/v1/handoffs/" + created.Handoff.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getResponse.Body.Close()
+	if getResponse.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d", getResponse.StatusCode)
+	}
+
+	deleteRequest, _ := http.NewRequest(http.MethodDelete, server.URL+"/v1/handoffs/"+created.Handoff.ID, nil)
+	deleteRequest.Header.Set("Authorization", "Bearer create-token")
+	deleteResponse, err := http.DefaultClient.Do(deleteRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteResponse.Body.Close()
+	if deleteResponse.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d", deleteResponse.StatusCode)
+	}
+	if _, err := store.Get(created.Handoff.ID); !os.IsNotExist(err) {
+		t.Fatalf("deleted handoff still exists: %v", err)
+	}
+}
+
+func TestStoreExpiresHandoff(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoff := types.Handoff{
+		Version:   types.ProtocolVersion,
+		ID:        "abcdefghijklmnopqrstuv",
+		CreatedAt: time.Now().Add(-time.Hour),
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}
+	if err := store.Save(handoff); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(handoff.ID); !os.IsNotExist(err) {
+		t.Fatalf("expired handoff returned: %v", err)
+	}
+}

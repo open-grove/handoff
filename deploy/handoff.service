@@ -1,0 +1,27 @@
+[Unit]
+Description=Handoff context service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=handoff
+EnvironmentFile=/etc/handoff/handoff.env
+ExecStart=/usr/local/bin/handoffd
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/var/lib/handoff
+
+[Install]
+WantedBy=multi-user.target
