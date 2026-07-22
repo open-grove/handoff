@@ -84,6 +84,9 @@ func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
 	if !strings.Contains(page, `<section class="hero"><h1>继续交接工具</h1></section>`) {
 		t.Fatalf("page title is not the compact heading: %s", page)
 	}
+	if !strings.Contains(page, `.human-content{display:grid;grid-template-columns:1fr;gap:0}`) {
+		t.Fatalf("human summary is not rendered as three full-width rows: %s", page)
+	}
 	if strings.Index(page, "核心流程已经可用") > strings.Index(page, "Agent 交接上下文") {
 		t.Fatal("human summary must appear before agent context")
 	}

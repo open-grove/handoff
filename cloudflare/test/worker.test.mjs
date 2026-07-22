@@ -72,6 +72,7 @@ test("publish, read, render, and delete a handoff", async () => {
   assert.equal(pageResponse.status, 200);
   assert.match(page, /<h1>继续交接工具<\/h1>/);
   assert.match(page, /核心流程可用/);
+  assert.match(page, /\.human-content\{display:grid;grid-template-columns:1fr;gap:0\}/);
   for (const removed of ["READY TO CONTINUE", "有效期至", "Shared with OpenGrove"]) assert.ok(!page.includes(removed));
 
   const markdownResponse = await route(new Request(`${created.share_url}.md`), env, ctx);
