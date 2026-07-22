@@ -20,6 +20,9 @@
 ## 用起来
 
 ```bash
+# 当前是 open-grove 组织内的私有仓库，需要先有组织访问权限
+gh repo clone open-grove/handoff
+cd handoff
 go install ./cmd/handoff
 
 # 首次配置；Token 通过 stdin 读取，避免进入 shell history
