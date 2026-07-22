@@ -99,13 +99,15 @@ set -a; . ./.env; set +a
 go run ./cmd/handoffd
 ```
 
-默认模式无需配置 Ark。只有团队明确使用 `--compact server` 时，才需要为 handoffd 配置标准 ModelArk API：
+默认模式无需配置火山方舟。只有团队明确使用 `--compact server` 时，才需要为 handoffd 配置 [方舟 Agent Plan](https://www.volcengine.com/docs/82379/2373738?lang=zh)：
 
 ```dotenv
-ARK_API_BASE=https://ark.cn-beijing.volces.com/api/v3
-ARK_API_KEY=...
-ARK_MODEL=<控制台已开通的 model id 或 endpoint id>
+ARK_AGENT_PLAN_BASE_URL=https://ark.cn-beijing.volces.com/api/plan
+ARK_AGENT_PLAN_API_KEY=...
+ARK_AGENT_PLAN_MODEL=ark-code-latest
 ```
+
+服务端通过 Agent Plan 的 Anthropic-compatible `/v1/messages` 接口生成 sections。必须使用 Agent Plan 专属 key；普通 ModelArk key 和 Coding Plan key 不可混用。
 
 HTTP API：
 

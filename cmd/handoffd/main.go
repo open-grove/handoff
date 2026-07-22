@@ -32,13 +32,13 @@ func main() {
 	}
 
 	var compactor card.Compactor
-	arkBaseURL := strings.TrimSpace(os.Getenv("ARK_API_BASE"))
-	arkAPIKey := strings.TrimSpace(os.Getenv("ARK_API_KEY"))
-	arkModel := strings.TrimSpace(os.Getenv("ARK_MODEL"))
-	if arkBaseURL != "" && arkAPIKey != "" && arkModel != "" {
-		compactor = card.ArkCompactor{BaseURL: arkBaseURL, APIKey: arkAPIKey, Model: arkModel}
+	agentPlanBaseURL := envOr("ARK_AGENT_PLAN_BASE_URL", "https://ark.cn-beijing.volces.com/api/plan")
+	agentPlanAPIKey := strings.TrimSpace(os.Getenv("ARK_AGENT_PLAN_API_KEY"))
+	agentPlanModel := envOr("ARK_AGENT_PLAN_MODEL", "ark-code-latest")
+	if agentPlanAPIKey != "" {
+		compactor = card.AgentPlanCompactor{BaseURL: agentPlanBaseURL, APIKey: agentPlanAPIKey, Model: agentPlanModel}
 	} else {
-		logger.Info("optional server compaction disabled; normal current-Agent publishing remains available")
+		logger.Info("optional Agent Plan server compaction disabled; normal current-Agent publishing remains available")
 	}
 
 	api := &server.API{

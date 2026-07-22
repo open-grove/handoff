@@ -350,6 +350,9 @@ func (api *API) logRequests(next http.Handler) http.Handler {
 }
 
 func safeLogPath(path string) string {
+	if path == "/v1/handoffs/compact" {
+		return path
+	}
 	if strings.HasPrefix(path, "/v1/handoffs/") {
 		return "/v1/handoffs/:id"
 	}

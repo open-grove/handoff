@@ -63,6 +63,26 @@ func (invalidCompactor) Compact(context.Context, string, types.Context) (Section
 	return Sections{Context: "only context"}, nil
 }
 
+type namedCompactor struct{}
+
+func (namedCompactor) Compact(context.Context, string, types.Context) (Sections, error) {
+	return Sections{Context: "Known", CurrentState: "Ready", NextSteps: []string{"Continue"}}, nil
+}
+func (namedCompactor) Generator() string { return "server:agent-plan" }
+
+func TestBuildUsesNamedCompactorGenerator(t *testing.T) {
+	now := time.Now().UTC()
+	handoff, err := Build(context.Background(), namedCompactor{}, "abcdefghijklmnopqrstuv", "continue", types.Context{
+		Source: "stdin", Messages: []types.Message{{Role: "user", Text: "known state"}},
+	}, now, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handoff.Generator != "server:agent-plan" || !strings.Contains(handoff.Markdown, `generator: "server:agent-plan"`) {
+		t.Fatalf("unexpected generator: %q", handoff.Generator)
+	}
+}
+
 func TestBuildFallsBackWhenModelContractIsIncomplete(t *testing.T) {
 	now := time.Now().UTC()
 	handoff, err := Build(context.Background(), invalidCompactor{}, "abcdefghijklmnopqrstuv", "continue", types.Context{
@@ -77,10 +97,13 @@ func TestBuildFallsBackWhenModelContractIsIncomplete(t *testing.T) {
 	}
 }
 
-func TestArkCompactorUsesOpenAICompatibleContract(t *testing.T) {
+func TestAgentPlanCompactorUsesAnthropicCompatibleContract(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/chat/completions" || request.Header.Get("Authorization") != "Bearer secret" {
+		if request.URL.Path != "/v1/messages" || request.Header.Get("Authorization") != "Bearer secret" {
 			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("anthropic-version") != "2023-06-01" {
+			t.Fatalf("anthropic-version = %q", request.Header.Get("anthropic-version"))
 		}
 		var body map[string]any
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
@@ -89,19 +112,25 @@ func TestArkCompactorUsesOpenAICompatibleContract(t *testing.T) {
 		if body["model"] != "model-1" {
 			t.Fatalf("model = %#v", body["model"])
 		}
+		if body["max_tokens"] != float64(4096) || body["system"] == nil {
+			t.Fatalf("invalid Anthropic request: %#v", body)
+		}
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"choices":[{"message":{"content":"` +
+		_, _ = response.Write([]byte(`{"content":[{"type":"text","text":"` +
 			`{\"context\":\"Known context\",\"decisions\":[],\"current_state\":\"Ready\",\"important_files\":[],\"next_steps\":[\"Continue\"],\"open_questions\":[]}` +
-			`"}}]}`))
+			`"}]}`))
 	}))
 	defer server.Close()
 
-	compactor := ArkCompactor{BaseURL: server.URL, APIKey: "secret", Model: "model-1", Client: server.Client()}
+	compactor := AgentPlanCompactor{BaseURL: server.URL, APIKey: "secret", Model: "model-1", Client: server.Client()}
 	sections, err := compactor.Compact(context.Background(), "Continue", types.Context{Source: "stdin", Messages: []types.Message{{Role: "user", Text: "Ready"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sections.Context != "Known context" || len(sections.NextSteps) != 1 {
 		t.Fatalf("sections = %#v", sections)
+	}
+	if compactor.Generator() != "server:agent-plan" {
+		t.Fatalf("generator = %q", compactor.Generator())
 	}
 }

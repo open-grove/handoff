@@ -22,7 +22,7 @@ import (
 	"github.com/open-grove/handoff/internal/types"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 const usage = `handoff — portable context for people and agents.
 
