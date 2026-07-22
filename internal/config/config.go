@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const defaultServer = "https://legacy-origin.example"
+const defaultServer = "https://handoff.openmau.com"
 
 type Profile struct {
 	Server string `json:"server"`

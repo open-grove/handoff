@@ -27,15 +27,22 @@ go install ./cmd/handoff
 
 # 首次配置；Token 通过 stdin 读取，避免进入 shell history
 printf '%s' "$HANDOFF_TOKEN" | \
-  handoff auth login --server https://handoff.example.com --token-stdin
+  handoff auth login --server https://handoff.openmau.com --token-stdin
 
 # 自动找当前工作区最近的 Codex / Claude / Pi Session
 handoff create "让同事继续完成 CLI 部署"
 
-# 创建成功后输出一份人和 Agent 都能使用的引用：
-# 收到一条 opengrove-handoff 分享：
-# 分享交接：https://handoff.example.com/h/a-secure-share-code
-# URL 最后一段就是 capability 分享码；页面内可打开原始 Markdown
+# 创建成功后输出一份 Markdown 消息，可直接粘贴到飞书、Slack 或聊天窗口：
+#
+# 收到一条 OpenGrove Handoff
+#
+# **给人看**
+# [打开交接文档](https://handoff.openmau.com/h/a-secure-share-code)
+# 浏览器直接打开，无需安装 Handoff。
+#
+# **给 Agent**
+# `opengrove-handoff，分享码：a-secure-share-code`
+# 把这一行发给 Agent；未安装时按消息里的仓库链接安装。
 
 # 可选：不调用 Agent，生成确定性本地摘要
 handoff create "continue" --compact none
@@ -47,11 +54,12 @@ handoff create "continue" --compact server
 some-agent-export | handoff create "continue the investigation"
 handoff create "continue" --file transcript.md --file decisions.md
 
-# 接收方无需 Token，可以粘贴 branded reference、分享码或 URL
+# 接收方无需 Token，可以粘贴 branded reference、分享码或 URL。
+# 人直接打开页面；Agent 读取分享码：
 handoff receive 'opengrove-handoff，分享码：a-secure-share-code'
 handoff receive a-secure-share-code
-handoff receive https://handoff.example.com/h/a-secure-share-code
-handoff receive https://handoff.example.com/h/a-secure-share-code.md
+handoff receive https://handoff.openmau.com/h/a-secure-share-code
+handoff receive https://handoff.openmau.com/h/a-secure-share-code.md
 handoff receive a-secure-share-code --output HANDOFF.md
 ```
 

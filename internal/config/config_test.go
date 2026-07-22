@@ -3,7 +3,7 @@ package config
 import "testing"
 
 func TestDefaultServerIsOpenGroveService(t *testing.T) {
-	if defaultServer != "https://legacy-origin.example" {
+	if defaultServer != "https://handoff.openmau.com" {
 		t.Fatalf("defaultServer = %q", defaultServer)
 	}
 }

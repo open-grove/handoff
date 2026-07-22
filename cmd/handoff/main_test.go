@@ -4,7 +4,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/open-grove/handoff/internal/types"
 	skillbundle "github.com/open-grove/handoff/skills"
 )
 
@@ -35,6 +37,28 @@ func TestParseHandoffRef(t *testing.T) {
 func TestParseHandoffRefRejectsInvalidValues(t *testing.T) {
 	if id, _ := parseHandoffRef("short"); id != "" {
 		t.Fatalf("accepted invalid id %q", id)
+	}
+}
+
+func TestFormatShareMessageSeparatesHumanAndAgentInstructions(t *testing.T) {
+	expiresAt := time.Date(2026, time.July, 29, 19, 42, 0, 0, time.Local)
+	result := types.CreateResponse{
+		Handoff:  types.Handoff{ID: "abcdefghijklmnopqrstuv", ExpiresAt: expiresAt},
+		ShareURL: "https://handoff.openmau.com/h/abcdefghijklmnopqrstuv",
+	}
+	message := formatShareMessage(result)
+	for _, expected := range []string{
+		"**给人看**",
+		"[打开交接文档](https://handoff.openmau.com/h/abcdefghijklmnopqrstuv)",
+		"浏览器直接打开，无需安装 Handoff",
+		"**给 Agent**",
+		"`opengrove-handoff，分享码：abcdefghijklmnopqrstuv`",
+		"[查看安装方法](https://github.com/open-grove/handoff)",
+		"有效期：" + expiresAt.Format(time.RFC3339),
+	} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("share message missing %q:\n%s", expected, message)
+		}
 	}
 }
 

@@ -1,4 +1,8 @@
-handoff.example.com {
-    encode zstd gzip
-    reverse_proxy 127.0.0.1:7391
+{
+	auto_https disable_redirects
+}
+
+https://handoff.openmau.com, https://legacy-origin.example {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:7391
 }

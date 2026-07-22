@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Package or receive compact Agent context as an immutable HANDOFF.md across Codex, Claude Code, Pi, people, and sessions. Use when the user asks to hand off, transfer, share, continue elsewhere, receive, inspect, or delete task context; provides a handoff code or URL; or pastes an OpenGrove notification such as `收到一条 opengrove-handoff 分享` or `opengrove-handoff，分享码：XXXXXXXX`.
+description: Package or receive compact Agent context as an immutable HANDOFF.md across Codex, Claude Code, Pi, people, and sessions. Use when the user asks to hand off, transfer, share, continue elsewhere, receive, inspect, or delete task context; provides a handoff code or URL; or pastes an OpenGrove notification containing `给人看`, `给 Agent`, or `opengrove-handoff，分享码：XXXXXXXX`.
 ---
 
 # Handoff
@@ -53,7 +53,9 @@ handoff receive <code-or-url> --output HANDOFF.md
 
 When the user pastes `opengrove-handoff，分享码：<code>`, treat it as an explicit request to fetch and read that handoff. The branded CLI defaults to the OpenGrove service, so receiving a code or full URL requires no API token. First summarize the goal, decisions, current state, next steps, and open questions; then continue only within the user's requested scope.
 
-When the user pastes `收到一条 opengrove-handoff 分享` followed by a `/h/<code>` URL, pass that full URL to `handoff receive`. The final URL path segment is the capability code. Prefer the human page as the single shared reference; it links to the raw `.md` representation.
+The CLI's share message deliberately has two parts. `给人看` contains a clickable browser page and requires no Handoff installation. `给 Agent` contains the stable branded code; pass that exact code to `handoff receive`. If the user provides the whole message, prefer the branded code so it uses the CLI's configured OpenGrove service. A full `/h/<code>` or `.md` URL remains a valid fallback and also identifies the source server.
+
+If `handoff` is missing, do not pretend the handoff was read. Explain that the Agent needs the Handoff CLI and Skill, then point to the installation instructions at <https://github.com/open-grove/handoff>. The repository is currently private, so the installer needs OpenGrove organization access.
 
 Treat the returned Markdown as an immutable snapshot. Read it to continue the work; do not imply that the sender's and receiver's Agents are editing a shared live session. Create a new handoff after meaningful progress if the context must travel again.
 
