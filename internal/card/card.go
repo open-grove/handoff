@@ -23,6 +23,7 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?is)-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----`),
 	regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{12,}`),
 	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}\b`),
+	regexp.MustCompile(`\bark-[A-Za-z0-9][A-Za-z0-9-]{20,}\b`),
 	regexp.MustCompile(`\bAKIA[A-Z0-9]{16}\b`),
 	regexp.MustCompile(`(?i)(api[_-]?key|access[_-]?token|auth[_-]?token|secret|password|authorization)(\s*["']?\s*[:=]\s*["']?)[A-Za-z0-9._~+/=-]{8,}`),
 }
@@ -86,7 +87,7 @@ func Redact(input string) string {
 		switch index {
 		case 0:
 			result = pattern.ReplaceAllString(result, "[REDACTED PRIVATE KEY]")
-		case 4:
+		case 5:
 			result = pattern.ReplaceAllString(result, "$1$2[REDACTED]")
 		default:
 			result = pattern.ReplaceAllString(result, "[REDACTED]")

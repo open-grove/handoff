@@ -18,12 +18,12 @@ func TestSanitizeContextRedactsSecretsAndPaths(t *testing.T) {
 		CWD:    "/Users/alice/work/demo",
 		Messages: []types.Message{{
 			Role: "user",
-			Text: "api_key = \"super-secret-value\"\nAuthorization: Bearer abcdefghijklmnop\nread /Users/alice/work/demo/main.go",
+			Text: "api_key = \"super-secret-value\"\nAuthorization: Bearer abcdefghijklmnop\nkey：ark-1234567890-abcdefghijklmnop\nread /Users/alice/work/demo/main.go",
 		}},
 	}
 	result := SanitizeContext(input)
 	text := result.Messages[0].Text
-	for _, forbidden := range []string{"super-secret-value", "abcdefghijklmnop", "/Users/alice"} {
+	for _, forbidden := range []string{"super-secret-value", "abcdefghijklmnop", "ark-1234567890-abcdefghijklmnop", "/Users/alice"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("sanitized text contains %q: %s", forbidden, text)
 		}
