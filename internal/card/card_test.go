@@ -112,7 +112,7 @@ func TestAgentPlanCompactorUsesAnthropicCompatibleContract(t *testing.T) {
 		if body["model"] != "model-1" {
 			t.Fatalf("model = %#v", body["model"])
 		}
-		if body["max_tokens"] != float64(4096) || body["system"] == nil {
+		if body["max_tokens"] != float64(16384) || body["system"] == nil {
 			t.Fatalf("invalid Anthropic request: %#v", body)
 		}
 		response.Header().Set("Content-Type", "application/json")
