@@ -34,15 +34,15 @@ handoff create "让同事继续完成 CLI 部署"
 
 # 创建成功后输出一份 Markdown 消息，可直接粘贴到飞书、Slack 或聊天窗口：
 #
-# 收到一条 OpenGrove Handoff
+# 🖐️ **For Human**
 #
-# **给人看**
-# [打开交接文档](https://handoff.openmau.com/h/a-secure-share-code)
-# 浏览器直接打开，无需安装 Handoff。
+# 你收到一份 Handoff，请打开[让同事继续完成 CLI 部署](https://handoff.openmau.com/h/a-secure-share-code)查看。
 #
-# **给 Agent**
-# `opengrove-handoff，分享码：a-secure-share-code`
-# 把这一行发给 Agent；未安装时按消息里的仓库链接安装。
+# 🤖 **For Agent**
+#
+# 请使用 opengrove-handoff 读取内容，分享码：`a-secure-share-code`
+#
+# 未安装时，请[查看安装方法](https://github.com/open-grove/handoff)。
 
 # 可选：不调用 Agent，生成确定性本地摘要
 handoff create "continue" --compact none

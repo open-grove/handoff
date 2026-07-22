@@ -28,7 +28,7 @@ const version = skillbundle.Version
 
 const installURL = "https://github.com/open-grove/handoff"
 
-var brandedHandoffRef = regexp.MustCompile(`(?i)opengrove-handoff\s*[,，]?\s*(?:分享码|code)\s*[:：]\s*([A-Za-z0-9_-]{20,32})`)
+var brandedHandoffRef = regexp.MustCompile("(?i)opengrove-handoff\\s*(?:读取内容\\s*)?[,，]?\\s*(?:分享码|code)\\s*[:：]\\s*`?([A-Za-z0-9_-]{20,32})")
 var embeddedHandoffURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+(?::[0-9]+)?/h/[A-Za-z0-9_-]{20,32}(?:\.md)?`)
 
 const usage = `handoff — portable context for people and agents.
@@ -273,20 +273,25 @@ func runCreate(profileName string, args []string) error {
 
 func formatShareMessage(result types.CreateResponse) string {
 	var message strings.Builder
-	message.WriteString("收到一条 OpenGrove Handoff\n\n")
-	message.WriteString("**给人看**\n\n")
+	message.WriteString("🖐️ **For Human**\n\n")
 	if result.ShareURL != "" {
-		fmt.Fprintf(&message, "[打开交接文档](%s)  \n", result.ShareURL)
-		message.WriteString("浏览器直接打开，无需安装 Handoff。\n")
+		fmt.Fprintf(&message, "你收到一份 Handoff，请打开[%s](%s)查看。\n", markdownLinkLabel(result.Handoff.Goal), result.ShareURL)
 	} else {
 		message.WriteString("服务端未返回公开链接，请让发送方检查 Handoff 服务配置。\n")
 	}
-	message.WriteString("\n**给 Agent**\n\n")
-	fmt.Fprintf(&message, "`opengrove-handoff，分享码：%s`  \n", result.Handoff.ID)
-	message.WriteString("把这一行发给 Agent；Agent 若已安装 Handoff，会读取交接内容并继续。\n\n")
-	fmt.Fprintf(&message, "Agent 还没安装？[查看安装方法](%s)（当前为私有仓库，需要 OpenGrove 组织访问权限）。\n\n", installURL)
+	message.WriteString("\n🤖 **For Agent**\n\n")
+	fmt.Fprintf(&message, "请使用 opengrove-handoff 读取内容，分享码：`%s`\n\n", result.Handoff.ID)
+	fmt.Fprintf(&message, "未安装时，请[查看安装方法](%s)。\n\n", installURL)
 	fmt.Fprintf(&message, "有效期：%s\n", result.Handoff.ExpiresAt.Local().Format(time.RFC3339))
 	return message.String()
+}
+
+func markdownLinkLabel(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return "Handoff 交接"
+	}
+	return strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(value)
 }
 
 func uploadDescription(compactMode string) string {
