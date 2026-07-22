@@ -196,7 +196,8 @@ func Render(handoff types.Handoff, sections Sections) string {
 
 func HTML(handoff types.Handoff) string {
 	var rendered bytes.Buffer
-	if err := markdownRenderer.Convert([]byte(handoff.Markdown), &rendered); err != nil {
+	displayMarkdown := withoutFrontMatter(handoff.Markdown)
+	if err := markdownRenderer.Convert([]byte(displayMarkdown), &rendered); err != nil {
 		rendered.WriteString("<pre>" + html.EscapeString(handoff.Markdown) + "</pre>")
 	}
 	title := strings.TrimSpace(handoff.Goal)
@@ -205,7 +206,19 @@ func HTML(handoff types.Handoff) string {
 	}
 	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(title) + ` · OpenGrove Handoff</title><style>
 :root{color-scheme:light;--ink:#17211b;--muted:#607066;--line:#dce6df;--paper:#fff;--bg:#f4f8f5;--accent:#17643b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:920px;margin:0 auto;padding:40px 22px 72px}.meta{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 18px;margin:0 0 18px;color:var(--muted);font-size:13px}.brand{color:var(--accent);font-weight:700;letter-spacing:.02em}article{background:var(--paper);padding:34px clamp(22px,5vw,54px);border:1px solid var(--line);border-radius:18px;box-shadow:0 14px 40px #17351f0d}h1,h2,h3{line-height:1.25;margin:1.5em 0 .65em}h1{font-size:2rem;margin-top:0}h2{font-size:1.25rem;padding-bottom:.35em;border-bottom:1px solid var(--line)}p,ul,ol,pre,blockquote,table{margin:0 0 1.1em}a{color:var(--accent)}code{font: .92em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#edf4ef;border-radius:5px;padding:.12em .35em}pre{overflow:auto;padding:16px;background:#101914;color:#e8f3ec;border-radius:10px}pre code{padding:0;background:none;color:inherit}blockquote{margin-left:0;padding-left:16px;border-left:3px solid #8db89f;color:#425247}table{display:block;overflow:auto;border-collapse:collapse}th,td{padding:8px 12px;border:1px solid var(--line);text-align:left}hr{border:0;border-top:1px solid var(--line)}@media(max-width:560px){.shell{padding:20px 12px 48px}article{padding:24px 18px;border-radius:12px}}
-</style></head><body><main class="shell"><div class="meta"><span class="brand">OpenGrove Handoff</span><span>有效期至 ` + html.EscapeString(handoff.ExpiresAt.Format(time.RFC3339)) + `</span></div><article>` + rendered.String() + `</article></main></body></html>`
+</style></head><body><main class="shell"><div class="meta"><span class="brand">OpenGrove Handoff</span><span>有效期至 ` + html.EscapeString(handoff.ExpiresAt.Format(time.RFC3339)) + ` · <a href="./` + html.EscapeString(handoff.ID) + `.md">原始 Markdown</a></span></div><article>` + rendered.String() + `</article></main></body></html>`
+}
+
+func withoutFrontMatter(markdown string) string {
+	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
+	if !strings.HasPrefix(markdown, "---\n") {
+		return markdown
+	}
+	rest := strings.TrimPrefix(markdown, "---\n")
+	if end := strings.Index(rest, "\n---\n"); end >= 0 {
+		return strings.TrimSpace(rest[end+5:])
+	}
+	return markdown
 }
 
 func (client AgentPlanCompactor) Compact(ctx context.Context, goal string, source types.Context) (Sections, error) {

@@ -59,8 +59,9 @@ func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 
 func TestHTMLRendersMarkdownWithoutRawHTML(t *testing.T) {
 	page := HTML(types.Handoff{
+		ID:        "abcdefghijklmnopqrstuv",
 		Goal:      "Continue safely",
-		Markdown:  "# Handoff\n\n## Current State\n\nReady.\n\n<script>alert('no')</script>",
+		Markdown:  "---\nversion: 2\n---\n\n# Handoff\n\n## Current State\n\nReady.\n\n<script>alert('no')</script>",
 		ExpiresAt: time.Date(2026, 7, 29, 8, 0, 0, 0, time.UTC),
 	})
 	if !strings.Contains(page, "<h1>Handoff</h1>") || !strings.Contains(page, "<h2>Current State</h2>") {
@@ -68,6 +69,9 @@ func TestHTMLRendersMarkdownWithoutRawHTML(t *testing.T) {
 	}
 	if strings.Contains(page, "<script>") {
 		t.Fatalf("raw HTML was rendered: %s", page)
+	}
+	if strings.Contains(page, "version: 2") || !strings.Contains(page, `href="./abcdefghijklmnopqrstuv.md"`) {
+		t.Fatalf("front matter or raw Markdown link is wrong: %s", page)
 	}
 }
 
