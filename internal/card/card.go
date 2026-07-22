@@ -221,7 +221,7 @@ func (client AgentPlanCompactor) Compact(ctx context.Context, goal string, sourc
 	request.Header.Set("Content-Type", "application/json")
 	httpClient := client.Client
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 90 * time.Second}
+		httpClient = &http.Client{Timeout: 4 * time.Minute}
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {

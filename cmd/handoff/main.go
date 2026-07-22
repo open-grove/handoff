@@ -207,7 +207,7 @@ func runCreate(profileName string, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	apiClient := client.Client{Server: profile.Server, Token: profile.Token}
 	var result types.CreateResponse

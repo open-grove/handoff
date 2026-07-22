@@ -75,7 +75,7 @@ func (client Client) request(ctx context.Context, method, path string, input, ou
 	}
 	httpClient := client.HTTP
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 120 * time.Second}
+		httpClient = &http.Client{Timeout: 5 * time.Minute}
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
