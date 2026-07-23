@@ -45,11 +45,15 @@ func TestVerifyAccessTokenUsesOpenGroveUserEndpoint(t *testing.T) {
 			t.Fatalf("unexpected request: %s %q", request.URL.Path, request.Header.Get("Authorization"))
 		}
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"data":{"user_id":"user-1"}}`))
+		_, _ = response.Write([]byte(`{"data":{"user_id":"user-1","email":"person@example.test","role":"user"}}`))
 	}))
 	defer server.Close()
 	ok, err := VerifyAccessToken(context.Background(), server.URL, "valid", server.Client())
 	if err != nil || !ok {
 		t.Fatalf("VerifyAccessToken() = %v, %v", ok, err)
+	}
+	user, err := CurrentUser(context.Background(), server.URL, "valid", server.Client())
+	if err != nil || user.UserID != "user-1" || user.Email != "person@example.test" {
+		t.Fatalf("CurrentUser() = %#v, %v", user, err)
 	}
 }

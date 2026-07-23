@@ -73,10 +73,14 @@ export async function route(request, env, ctx = { waitUntil() {} }) {
   }
 
   if (request.method === "POST" && path === "/v1/handoffs") {
+    if (!await anonymousPublishAllowed(request, env)) {
+      return json({ error: "too many handoffs created; retry later" }, 429);
+    }
     const input = await readJSON(request);
     const handoff = buildFromSections(input, resolveTTL(input.ttl_seconds));
-    await saveHandoff(env, handoff);
-    return json(createResponse(request, env, handoff), 201);
+    const ownership = await newDeleteCredential();
+    await saveHandoff(env, handoff, ownership.hash);
+    return json(createResponse(request, env, handoff, ownership.token), 201);
   }
 
   if (request.method === "POST" && (path === "/v1/handoffs/compact-preview" || path === "/v1/handoffs/compact")) {
@@ -119,8 +123,9 @@ export async function route(request, env, ctx = { waitUntil() {} }) {
       sections: generated.sections,
       generator: generated.generator,
     }, ttl);
-    await saveHandoff(env, handoff);
-    return json(createResponse(request, env, handoff), 201);
+    const ownership = await newDeleteCredential();
+    await saveHandoff(env, handoff, ownership.hash);
+    return json(createResponse(request, env, handoff, ownership.token), 201);
   }
 
   const apiMatch = path.match(/^\/v1\/handoffs\/([A-Za-z0-9_-]{20,32})$/);
@@ -131,7 +136,9 @@ export async function route(request, env, ctx = { waitUntil() {} }) {
   }
 
   if (apiMatch && request.method === "DELETE") {
-    if (!authorizedAdmin(request, env)) return json({ error: "unauthorized" }, 401);
+    if (!authorizedAdmin(request, env) && !await authorizedOwner(request, env, apiMatch[1])) {
+      return json({ error: "unauthorized" }, 401);
+    }
     await env.HANDOFF_DB.prepare("DELETE FROM handoffs WHERE id = ?").bind(apiMatch[1]).run();
     return response(null, 204);
   }
@@ -150,6 +157,13 @@ export async function route(request, env, ctx = { waitUntil() {} }) {
   }
 
   return json({ error: "not found" }, 404);
+}
+
+async function anonymousPublishAllowed(request, env) {
+  if (!env.HANDOFF_CREATE_RATE_LIMITER?.limit) return true;
+  const actor = String(request.headers.get("CF-Connecting-IP") || "unknown").trim();
+  const result = await env.HANDOFF_CREATE_RATE_LIMITER.limit({ key: actor });
+  return Boolean(result?.success);
 }
 
 async function authenticateOpenGroveUser(request, env) {
@@ -192,6 +206,16 @@ function authorizedAdmin(request, env) {
     mismatch |= expected.charCodeAt(index) ^ provided.charCodeAt(index);
   }
   return mismatch === 0;
+}
+
+async function authorizedOwner(request, env, id) {
+  const token = String(request.headers.get("X-Handoff-Delete-Token") || "").trim();
+  if (!token) return false;
+  const row = await env.HANDOFF_DB.prepare("SELECT delete_token_hash FROM handoffs WHERE id = ?")
+    .bind(id)
+    .first();
+  if (!row?.delete_token_hash) return false;
+  return timingSafeEqual(String(row.delete_token_hash), await hashDeleteToken(token));
 }
 
 function bearerToken(request) {
@@ -480,12 +504,12 @@ function fallbackSections(goal, source) {
   }, goal);
 }
 
-async function saveHandoff(env, handoffWithSections) {
+async function saveHandoff(env, handoffWithSections, deleteTokenHash) {
   const { _sections: sections, ...handoff } = handoffWithSections;
   const payload = JSON.stringify({ handoff, sections });
   const expiresAt = Date.parse(handoff.expires_at);
-  await env.HANDOFF_DB.prepare("INSERT INTO handoffs (id, payload, expires_at) VALUES (?, ?, ?)")
-    .bind(handoff.id, payload, expiresAt)
+  await env.HANDOFF_DB.prepare("INSERT INTO handoffs (id, payload, expires_at, delete_token_hash) VALUES (?, ?, ?, ?)")
+    .bind(handoff.id, payload, expiresAt, deleteTokenHash)
     .run();
 }
 
@@ -506,13 +530,14 @@ async function getHandoff(env, id, ctx) {
   }
 }
 
-function createResponse(request, env, handoffWithSections) {
+function createResponse(request, env, handoffWithSections, deleteToken = "") {
   const { _sections: _ignored, ...handoff } = handoffWithSections;
   const origin = String(env.HANDOFF_PUBLIC_URL || new URL(request.url).origin).replace(/\/+$/, "");
   return {
     handoff,
     share_url: `${origin}/h/${handoff.id}`,
     markdown_url: `${origin}/h/${handoff.id}.md`,
+    ...(deleteToken ? { delete_token: deleteToken } : {}),
   };
 }
 
@@ -577,9 +602,9 @@ export function renderHTML(handoff, sections) {
   ].map(([title, value]) => `<section><h3>${escapeHTML(title)}</h3>${Array.isArray(value) ? renderItems(value) : renderText(value)}</section>`).join("");
 
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(handoff.goal)} · OpenGrove Handoff</title><style>
-:root{color-scheme:light;--bg:#f7f7f5;--paper:#fff;--ink:#252525;--muted:#74746f;--line:#e7e6e2;--accent:#635bda;--accent-soft:#eeecff;--green:#247a52;--green-soft:#e9f7ef;--shadow:0 18px 60px rgba(31,31,28,.07)}*{box-sizing:border-box}html,body{margin:0;background:var(--bg)}body{color:var(--ink);font:16px/1.7 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}.shell{width:min(900px,calc(100% - 32px));margin:auto;padding:24px 0 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:42px}.brand{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:720}.brand-mark{display:grid;place-items:center;flex:0 0 auto;width:30px;height:30px;padding:2px;border:1px solid var(--line);border-radius:9px;background:#fbfbfa}.brand-mark svg{display:block;width:100%;height:100%}.brand small{color:var(--muted);font-size:14px;font-weight:540}.raw-link{padding:6px 13px;border:1px solid var(--line);border-radius:10px;color:var(--muted);background:var(--paper);font-size:13px;font-weight:650;text-decoration:none}.hero,.content{max-width:760px;margin-left:auto;margin-right:auto}.hero{margin-bottom:22px;text-align:center}.hero h1{margin:0;font-size:clamp(1.65rem,3.5vw,2.35rem);line-height:1.22;letter-spacing:-.035em}.content{display:grid;gap:16px}.panel{border:1px solid var(--line);border-radius:20px;background:var(--paper);overflow:hidden}.human-panel{padding:30px clamp(22px,5vw,46px) 38px;box-shadow:var(--shadow)}.panel-heading{display:flex;align-items:center;gap:13px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--line)}.audience-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:var(--accent-soft);font-size:18px}.eyebrow{display:block;color:var(--accent);font-size:11px;line-height:1.35;font-weight:780;letter-spacing:.12em}.panel-heading h2{margin:3px 0 0;font-size:18px}.human-content{display:grid;grid-template-columns:1fr 1fr;gap:22px 30px}.summary-block:last-child{grid-column:1/-1;padding-top:22px;border-top:1px solid var(--line)}h3{margin:0 0 9px;font-size:14px}.human-content h3{color:var(--green)}p,ul{margin:0}ul{padding-left:1.2em}li+li{margin-top:5px}.agent-panel{background:rgba(255,255,255,.58)}.agent-panel summary{display:flex;align-items:center;justify-content:space-between;padding:21px 24px;cursor:pointer;list-style:none}.agent-panel summary::-webkit-details-marker{display:none}.summary-main{display:flex;align-items:center;gap:13px}.summary-main strong{display:block;margin-top:3px;font-size:15px}.chevron{font-size:28px;color:var(--muted);transform:rotate(90deg)}.agent-panel[open] .chevron{transform:rotate(-90deg)}.agent-body{padding:24px;border-top:1px solid var(--line)}.agent-instruction{margin:0 0 28px;padding:18px 20px;border:1px solid #dcd8ff;border-radius:14px;background:var(--accent-soft)}.agent-instruction p{margin-top:5px}.agent-instruction a{color:var(--accent);font-size:13px}.agent-content{display:grid;gap:24px}.agent-content h3{font-size:15px}.agent-content p{white-space:pre-wrap}.agent-content code,.agent-instruction code{padding:.13em .38em;border-radius:5px;background:#f0f0ed;font: .9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#171716;--paper:#232322;--ink:#f1f1ef;--muted:#a4a49f;--line:#373735;--accent:#a9a3ff;--accent-soft:#302e4b;--green:#72c99a;--green-soft:#203a2d;--shadow:0 20px 65px rgba(0,0,0,.25)}.agent-panel{background:rgba(35,35,34,.72)}.agent-content code,.agent-instruction code{background:#30302e}.agent-instruction{border-color:#48436d}}@media(max-width:640px){.shell{width:min(100% - 20px,900px);padding-top:18px}.topbar{margin-bottom:32px}.hero h1{font-size:1.75rem}.human-panel{padding:24px 20px 30px}.human-content{display:block}.summary-block{margin-top:24px}.summary-block:first-child{margin-top:0}.summary-block:last-child{padding-top:24px}.agent-panel summary{padding:18px}.agent-body{padding:18px}}
+:root{color-scheme:light;--bg:#f7f7f5;--paper:#fff;--ink:#252525;--muted:#74746f;--line:#e7e6e2;--accent:#635bda;--accent-soft:#eeecff;--green:#247a52;--green-soft:#e9f7ef;--shadow:0 18px 60px rgba(31,31,28,.07)}*{box-sizing:border-box}html,body{margin:0;background:var(--bg)}body{color:var(--ink);font:16px/1.7 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}.shell{width:min(900px,calc(100% - 32px));margin:auto;padding:24px 0 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:42px}.brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-size:14px;font-weight:720;text-decoration:none}.brand-mark{display:grid;place-items:center;flex:0 0 auto;width:30px;height:30px;padding:2px;border:1px solid var(--line);border-radius:9px;background:#fbfbfa}.brand-mark svg{display:block;width:100%;height:100%}.brand small{color:var(--muted);font-size:14px;font-weight:540}.raw-link{padding:6px 13px;border:1px solid var(--line);border-radius:10px;color:var(--muted);background:var(--paper);font-size:13px;font-weight:650;text-decoration:none}.hero,.content{max-width:760px;margin-left:auto;margin-right:auto}.hero{margin-bottom:22px;text-align:center}.hero h1{margin:0;font-size:clamp(1.65rem,3.5vw,2.35rem);line-height:1.22;letter-spacing:-.035em}.content{display:grid;gap:16px}.panel{border:1px solid var(--line);border-radius:20px;background:var(--paper);overflow:hidden}.human-panel{padding:30px clamp(22px,5vw,46px) 38px;box-shadow:var(--shadow)}.panel-heading{display:flex;align-items:center;gap:13px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--line)}.audience-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:var(--accent-soft);font-size:18px}.eyebrow{display:block;color:var(--accent);font-size:11px;line-height:1.35;font-weight:780;letter-spacing:.12em}.panel-heading h2{margin:3px 0 0;font-size:18px}.human-content{display:grid;grid-template-columns:1fr 1fr;gap:22px 30px}.summary-block:last-child{grid-column:1/-1;padding-top:22px;border-top:1px solid var(--line)}h3{margin:0 0 9px;font-size:14px}.human-content h3{color:var(--green)}p,ul{margin:0}ul{padding-left:1.2em}li+li{margin-top:5px}.agent-panel{background:rgba(255,255,255,.58)}.agent-panel summary{display:flex;align-items:center;justify-content:space-between;padding:21px 24px;cursor:pointer;list-style:none}.agent-panel summary::-webkit-details-marker{display:none}.summary-main{display:flex;align-items:center;gap:13px}.summary-main strong{display:block;margin-top:3px;font-size:15px}.chevron{font-size:28px;color:var(--muted);transform:rotate(90deg)}.agent-panel[open] .chevron{transform:rotate(-90deg)}.agent-body{padding:24px;border-top:1px solid var(--line)}.agent-instruction{margin:0 0 28px;padding:18px 20px;border:1px solid #dcd8ff;border-radius:14px;background:var(--accent-soft)}.agent-instruction p{margin-top:5px}.agent-instruction a{color:var(--accent);font-size:13px}.agent-content{display:grid;gap:24px}.agent-content h3{font-size:15px}.agent-content p{white-space:pre-wrap}.agent-content code,.agent-instruction code{padding:.13em .38em;border-radius:5px;background:#f0f0ed;font: .9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#171716;--paper:#232322;--ink:#f1f1ef;--muted:#a4a49f;--line:#373735;--accent:#a9a3ff;--accent-soft:#302e4b;--green:#72c99a;--green-soft:#203a2d;--shadow:0 20px 65px rgba(0,0,0,.25)}.agent-panel{background:rgba(35,35,34,.72)}.agent-content code,.agent-instruction code{background:#30302e}.agent-instruction{border-color:#48436d}}@media(max-width:640px){.shell{width:min(100% - 20px,900px);padding-top:18px}.topbar{margin-bottom:32px}.hero h1{font-size:1.75rem}.human-panel{padding:24px 20px 30px}.human-content{display:block}.summary-block{margin-top:24px}.summary-block:first-child{margin-top:0}.summary-block:last-child{padding-top:24px}.agent-panel summary{padding:18px}.agent-body{padding:18px}}
 .human-content{display:grid;grid-template-columns:1fr;gap:0}.summary-block{min-width:0;margin:0;padding:22px 0;border-top:1px solid var(--line)}.summary-block:first-child{padding-top:0;border-top:0}.summary-block:last-child{padding-bottom:0}
-</style></head><body><div class="shell"><header class="topbar"><div class="brand"><span class="brand-mark">${OPENGROVE_SAPLING_SVG}</span><div>OpenGrove <small>/ Handoff</small></div></div><a class="raw-link" href="./${escapeHTML(handoff.id)}.md">Markdown ↗</a></header><main><section class="hero"><h1>${escapeHTML(handoff.goal)}</h1></section><div class="content"><section class="panel human-panel"><div class="panel-heading"><span class="audience-icon" aria-hidden="true">🖐️</span><div><span class="eyebrow">FOR HUMAN</span><h2>先看这里</h2></div></div><div class="human-content"><section class="summary-block"><h3>项目背景</h3>${renderText(sections.human_background)}</section><section class="summary-block"><h3>当前情况</h3>${renderText(sections.human_status)}</section><section class="summary-block"><h3>待办事项</h3>${humanTodoItems}</section></div></section><details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>Agent 交接上下文</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span class="eyebrow">给 Agent 的指令</span><p>请使用 <strong>opengrove-handoff</strong> 读取内容，分享码：<code>${escapeHTML(handoff.id)}</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a></div><div class="agent-content">${agentSections}</div></div></details></div></main></div></body></html>`;
+</style></head><body><div class="shell"><header class="topbar"><a class="brand" href="https://github.com/open-grove/handoff" aria-label="Open OpenGrove Handoff on GitHub"><span class="brand-mark">${OPENGROVE_SAPLING_SVG}</span><div>OpenGrove <small>/ Handoff</small></div></a><a class="raw-link" href="./${escapeHTML(handoff.id)}.md">Markdown ↗</a></header><main><section class="hero"><h1>${escapeHTML(handoff.goal)}</h1></section><div class="content"><section class="panel human-panel"><div class="panel-heading"><span class="audience-icon" aria-hidden="true">🖐️</span><div><span class="eyebrow">FOR HUMAN</span><h2>先看这里</h2></div></div><div class="human-content"><section class="summary-block"><h3>项目背景</h3>${renderText(sections.human_background)}</section><section class="summary-block"><h3>当前情况</h3>${renderText(sections.human_status)}</section><section class="summary-block"><h3>待办事项</h3>${humanTodoItems}</section></div></section><details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>Agent 交接上下文</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span class="eyebrow">给 Agent 的指令</span><p>请使用 <strong>opengrove-handoff</strong> 读取内容，分享码：<code>${escapeHTML(handoff.id)}</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a></div><div class="agent-content">${agentSections}</div></div></details></div></main></div></body></html>`;
 }
 
 function renderText(value) {
@@ -602,9 +627,34 @@ function inlineMarkdown(value) {
 function randomID() {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
+  return base64URL(bytes);
+}
+
+async function newDeleteCredential() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const token = base64URL(bytes);
+  return { token, hash: await hashDeleteToken(token) };
+}
+
+async function hashDeleteToken(token) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(token).trim()));
+  return base64URL(new Uint8Array(digest));
+}
+
+function base64URL(bytes) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function timingSafeEqual(left, right) {
+  if (left.length !== right.length) return false;
+  let mismatch = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return mismatch === 0;
 }
 
 function markdownTitle(value) {

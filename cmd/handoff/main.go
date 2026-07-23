@@ -21,8 +21,10 @@ import (
 	"github.com/open-grove/handoff/internal/client"
 	"github.com/open-grove/handoff/internal/config"
 	"github.com/open-grove/handoff/internal/opengroveauth"
+	"github.com/open-grove/handoff/internal/ownership"
 	"github.com/open-grove/handoff/internal/source"
 	"github.com/open-grove/handoff/internal/types"
+	"github.com/open-grove/handoff/internal/updater"
 	skillbundle "github.com/open-grove/handoff/skills"
 )
 
@@ -39,6 +41,8 @@ AGENT QUICKSTART:
   handoff create "next goal"                 Auto-detect this workspace's latest Agent session
   agent-export | handoff create "next goal"  Create from stdin
   handoff receive <code>                     Print a received HANDOFF.md
+  handoff whoami                            Show identity and cloud-compaction access
+  handoff update --check                    Check for a verified release update
   handoff schema create                      Inspect the create contract
   handoff skills read handoff                Read the version-matched Agent Skill
 
@@ -52,12 +56,16 @@ Commands:
   auth         Manage the optional administrator credential
   config       Show or update CLI configuration
   doctor       Check source detection, OpenGrove login, and connectivity   Risk: read
+  whoami       Show CLI, OpenGrove, and cloud-compaction identity           Risk: read
+  update       Check for or install a verified GitHub release              Risk: high-risk-write
   schema       Print machine-readable command contracts               Risk: read
-  skills       List or read Agent Skills embedded in this CLI          Risk: read
+  skills       List, read, or install Agent Skills embedded in this CLI     Risk: read/write
   version      Print the CLI version
 
 Global flags:
   --profile NAME   Use a named configuration profile
+  --json           Machine-readable JSON output
+  --format FORMAT  Output format: text or json
   -h, --help       Show help
 
 Context sources:
@@ -104,6 +112,10 @@ func (err *structuredError) Error() string {
 }
 
 func run(args []string) error {
+	args, outputFormat, err := extractOutputFormat(args)
+	if err != nil {
+		return err
+	}
 	root := flag.NewFlagSet("handoff", flag.ContinueOnError)
 	root.SetOutput(io.Discard)
 	profileName := root.String("profile", "", "configuration profile")
@@ -119,22 +131,29 @@ func run(args []string) error {
 	command, commandArgs := root.Args()[0], root.Args()[1:]
 	switch command {
 	case "create":
-		return runCreate(*profileName, commandArgs)
+		return runCreate(*profileName, outputFormat, commandArgs)
 	case "receive", "get":
-		return runReceive(*profileName, commandArgs)
+		return runReceive(*profileName, outputFormat, commandArgs)
 	case "delete":
-		return runDelete(*profileName, commandArgs)
+		return runDelete(*profileName, outputFormat, commandArgs)
 	case "auth":
-		return runAuth(*profileName, commandArgs)
+		return runAuth(*profileName, outputFormat, commandArgs)
 	case "config":
-		return runConfig(*profileName, commandArgs)
+		return runConfig(*profileName, outputFormat, commandArgs)
 	case "doctor":
-		return runDoctor(*profileName, commandArgs)
+		return runDoctor(*profileName, outputFormat, commandArgs)
+	case "whoami":
+		return runWhoAmI(*profileName, outputFormat, commandArgs)
+	case "update":
+		return runUpdate(outputFormat, commandArgs)
 	case "schema":
-		return runSchema(commandArgs)
+		return runSchema(outputFormat, commandArgs)
 	case "skills":
-		return runSkills(commandArgs)
+		return runSkills(outputFormat, commandArgs)
 	case "version":
+		if outputFormat == "json" {
+			return printJSON(map[string]any{"version": version})
+		}
 		fmt.Println(version)
 		return nil
 	case "help":
@@ -145,7 +164,7 @@ func run(args []string) error {
 	}
 }
 
-func runCreate(profileName string, args []string) error {
+func runCreate(profileName, outputFormat string, args []string) error {
 	goalArgument, args := leadingArgument(args)
 	flags := flag.NewFlagSet("handoff create", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -284,15 +303,30 @@ func runCreate(profileName string, args []string) error {
 	if err != nil {
 		return err
 	}
+	deleteCredentialSaved := false
+	var deleteCredentialWarning error
+	if result.DeleteToken != "" {
+		if saveErr := ownership.Save(profile.Server, result.Handoff.ID, result.DeleteToken); saveErr != nil {
+			deleteCredentialWarning = saveErr
+		} else {
+			deleteCredentialSaved = true
+		}
+		result.DeleteToken = ""
+	}
 	if *output != "" {
 		if err := writeOutput(*output, result.Handoff.Markdown, *force); err != nil {
 			return err
 		}
 	}
-	if *jsonOutput {
-		return printJSON(result)
+	if outputFormat == "json" || *jsonOutput {
+		return printJSON(createCommandOutput(result, deleteCredentialSaved))
 	}
 	fmt.Print(formatShareMessage(result))
+	if deleteCredentialWarning != nil {
+		fmt.Println("Warning: the private delete credential could not be saved locally; this handoff may require an administrator to delete")
+	} else if deleteCredentialSaved {
+		fmt.Println("Delete: private credential saved locally")
+	}
 	if generationWarning != nil {
 		fmt.Println("Note:   requested generator was unavailable; used deterministic local extraction")
 		fmt.Println("Cause:  " + generationWarning.Error())
@@ -419,7 +453,7 @@ func reviewSections(ctx context.Context, goal string, sourceContext types.Contex
 	return parsed, nil
 }
 
-func runReceive(profileName string, args []string) error {
+func runReceive(profileName, outputFormat string, args []string) error {
 	idArgument, args := leadingArgument(args)
 	flags := flag.NewFlagSet("handoff receive", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -463,14 +497,14 @@ func runReceive(profileName string, args []string) error {
 		fmt.Println(absolute)
 		return nil
 	}
-	if *jsonOutput {
+	if outputFormat == "json" || *jsonOutput {
 		return printJSON(result)
 	}
 	fmt.Print(result.Handoff.Markdown)
 	return nil
 }
 
-func runDelete(profileName string, args []string) error {
+func runDelete(profileName, outputFormat string, args []string) error {
 	idArgument, args := leadingArgument(args)
 	flags := flag.NewFlagSet("handoff delete", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -487,7 +521,7 @@ func runDelete(profileName string, args []string) error {
 	if idArgument == "" || len(flags.Args()) > 0 {
 		return errors.New("usage: handoff delete <code> --yes")
 	}
-	id, _ := parseHandoffRef(idArgument)
+	id, referenceServer := parseHandoffRef(idArgument)
 	if id == "" {
 		return errors.New("invalid handoff code or URL")
 	}
@@ -507,16 +541,32 @@ func runDelete(profileName string, args []string) error {
 	if err != nil {
 		return err
 	}
+	if referenceServer != "" {
+		profile.Server = referenceServer
+	}
+	deleteToken, err := ownership.Get(profile.Server, id)
+	if err != nil {
+		return fmt.Errorf("read local delete credential: %w", err)
+	}
+	if deleteToken == "" && profile.Token == "" {
+		return errors.New("no local delete credential for this handoff; only its creator or a service administrator can delete it")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := (client.Client{Server: profile.Server, Token: profile.Token}).Delete(ctx, id); err != nil {
+	if err := (client.Client{Server: profile.Server, Token: profile.Token, DeleteToken: deleteToken}).Delete(ctx, id); err != nil {
 		return err
+	}
+	if deleteToken != "" {
+		_ = ownership.Remove(profile.Server, id)
+	}
+	if outputFormat == "json" {
+		return printJSON(map[string]any{"deleted": true, "id": id, "server": profile.Server})
 	}
 	fmt.Println("Handoff deleted.")
 	return nil
 }
 
-func runAuth(profileName string, args []string) error {
+func runAuth(profileName, outputFormat string, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: handoff auth <login|status|logout>")
 	}
@@ -562,20 +612,32 @@ func runAuth(profileName string, args []string) error {
 		if err := config.Save(cfg); err != nil {
 			return err
 		}
+		if outputFormat == "json" {
+			return printJSON(map[string]any{"logged_in": true, "profile": name, "server": strings.TrimRight(*server, "/")})
+		}
 		fmt.Printf("Logged in to %s as profile %q.\n", strings.TrimRight(*server, "/"), name)
 		return nil
 	case "status":
 		_, openGroveAuthErr := opengroveauth.AccessToken(time.Now())
-		return printJSON(map[string]any{
+		status := map[string]any{
 			"profile": name, "server": profile.Server,
 			"opengrove_authenticated": openGroveAuthErr == nil,
 			"admin_token_configured":  profile.Token != "",
-		})
+		}
+		if outputFormat == "text" {
+			fmt.Printf("OpenGrove login: %s\nServer: %s\nAdministrator credential: %s\n",
+				boolWord(openGroveAuthErr == nil), profile.Server, boolWord(profile.Token != ""))
+			return nil
+		}
+		return printJSON(status)
 	case "logout":
 		profile.Token = ""
 		cfg.Profiles[name] = profile
 		if err := config.Save(cfg); err != nil {
 			return err
+		}
+		if outputFormat == "json" {
+			return printJSON(map[string]any{"logged_out": true, "profile": name})
 		}
 		fmt.Printf("Logged out profile %q.\n", name)
 		return nil
@@ -584,7 +646,7 @@ func runAuth(profileName string, args []string) error {
 	}
 }
 
-func runConfig(profileName string, args []string) error {
+func runConfig(profileName, outputFormat string, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: handoff config <show|set-server>")
 	}
@@ -599,7 +661,12 @@ func runConfig(profileName string, args []string) error {
 	switch args[0] {
 	case "show":
 		path, _ := config.Path()
-		return printJSON(map[string]any{"profile": name, "server": profile.Server, "admin_token_configured": profile.Token != "", "path": path})
+		value := map[string]any{"profile": name, "server": profile.Server, "admin_token_configured": profile.Token != "", "path": path}
+		if outputFormat == "text" {
+			fmt.Printf("Profile: %s\nServer: %s\nConfig: %s\n", name, profile.Server, path)
+			return nil
+		}
+		return printJSON(value)
 	case "set-server":
 		if len(args) != 2 {
 			return errors.New("usage: handoff config set-server <url>")
@@ -613,6 +680,9 @@ func runConfig(profileName string, args []string) error {
 		if err := config.Save(cfg); err != nil {
 			return err
 		}
+		if outputFormat == "json" {
+			return printJSON(map[string]any{"profile": name, "server": profile.Server})
+		}
 		fmt.Println(profile.Server)
 		return nil
 	default:
@@ -620,7 +690,7 @@ func runConfig(profileName string, args []string) error {
 	}
 }
 
-func runDoctor(profileName string, args []string) error {
+func runDoctor(profileName, outputFormat string, args []string) error {
 	flags := flag.NewFlagSet("handoff doctor", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	offline := flags.Bool("offline", false, "skip server connectivity")
@@ -663,7 +733,11 @@ func runDoctor(profileName string, args []string) error {
 			checks = append(checks, map[string]any{"check": "server", "ok": true, "detail": profile.Server})
 		}
 	}
-	if err := printJSON(map[string]any{"ok": !failed, "checks": checks}); err != nil {
+	if outputFormat == "text" {
+		for _, check := range checks {
+			fmt.Printf("%s %s: %s\n", boolMarker(check["ok"] == true), check["check"], check["detail"])
+		}
+	} else if err := printJSON(map[string]any{"ok": !failed, "checks": checks}); err != nil {
 		return err
 	}
 	if failed {
@@ -672,14 +746,127 @@ func runDoctor(profileName string, args []string) error {
 	return nil
 }
 
-func runSchema(args []string) error {
+func runWhoAmI(profileName, outputFormat string, args []string) error {
+	if len(args) != 0 {
+		return errors.New("usage: handoff whoami")
+	}
+	name, profile, err := loadProfile(profileName)
+	if err != nil {
+		return err
+	}
+	token, tokenErr := opengroveauth.AccessToken(time.Now())
+	authenticated := false
+	var user opengroveauth.User
+	var verificationError string
+	if tokenErr == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		baseURL := strings.TrimSpace(os.Getenv("OPENGROVE_WW_BASE_URL"))
+		user, err = opengroveauth.CurrentUser(ctx, baseURL, token, nil)
+		if err != nil {
+			verificationError = err.Error()
+		} else {
+			authenticated = user.UserID != ""
+		}
+	}
+	value := map[string]any{
+		"cli": map[string]any{
+			"name":    "opengrove-handoff",
+			"version": version,
+		},
+		"profile": name,
+		"server":  profile.Server,
+		"opengrove": map[string]any{
+			"authenticated": authenticated,
+			"user":          user,
+			"error":         verificationError,
+		},
+		"capabilities": map[string]any{
+			"publish":            true,
+			"receive":            true,
+			"cloud_compaction":   authenticated,
+			"publish_login":      "not required",
+			"compaction_login":   "OpenGrove required",
+			"administrator_mode": profile.Token != "",
+		},
+	}
+	if outputFormat == "json" {
+		return printJSON(value)
+	}
+	identity := "未登录"
+	if authenticated {
+		identity = user.Email
+		if identity == "" {
+			identity = user.UserID
+		}
+	}
+	fmt.Printf("Handoff: v%s\nServer: %s\nOpenGrove: %s\n云端压缩: %s\n匿名发布与读取: 可用\n",
+		version, profile.Server, identity, boolAvailability(authenticated))
+	if verificationError != "" {
+		fmt.Println("登录校验异常: " + verificationError)
+	}
+	return nil
+}
+
+func runUpdate(outputFormat string, args []string) error {
+	flags := flag.NewFlagSet("handoff update", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	checkOnly := flags.Bool("check", false, "only check for updates")
+	force := flags.Bool("force", false, "reinstall the latest release")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if len(flags.Args()) != 0 {
+		return errors.New("usage: handoff update [--check] [--force]")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	updateClient := updater.Client{Token: updater.GitHubToken()}
+	result, err := updateClient.Check(ctx, version)
+	if err != nil {
+		return err
+	}
+	if *checkOnly || !result.UpdateAvailable && !*force {
+		if outputFormat == "json" {
+			return printJSON(result)
+		}
+		if result.UpdateAvailable {
+			fmt.Printf("Handoff %s is available (current %s). Run `handoff update` to install it.\n", result.LatestVersion, result.CurrentVersion)
+		} else {
+			fmt.Printf("Handoff %s is up to date.\n", result.CurrentVersion)
+		}
+		return nil
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := updateClient.Apply(ctx, result, executable); err != nil {
+		return err
+	}
+	if outputFormat == "json" {
+		return printJSON(map[string]any{
+			"updated":          true,
+			"previous_version": result.CurrentVersion,
+			"version":          result.LatestVersion,
+			"release_url":      result.ReleaseURL,
+		})
+	}
+	fmt.Printf("Updated Handoff %s → %s. Restart any running Agent session before relying on new Skill behavior.\n", result.CurrentVersion, result.LatestVersion)
+	return nil
+}
+
+func runSchema(outputFormat string, args []string) error {
 	if len(args) > 1 {
-		return errors.New("usage: handoff schema [create|receive|delete]")
+		return errors.New("usage: handoff schema [create|receive|delete|auth|config|doctor|whoami|update|skills|version]")
 	}
 	if len(args) == 0 {
 		return printJSON(map[string]any{
 			"ok":       true,
-			"commands": []string{"create", "receive", "delete"},
+			"commands": []string{"create", "receive", "delete", "auth", "config", "doctor", "whoami", "update", "skills", "version"},
 			"hint":     "run `handoff schema <command>` for its JSON Schema contract",
 		})
 	}
@@ -750,7 +937,7 @@ func schemaContract(command string) (map[string]any, error) {
 		}, nil
 	case "delete":
 		return map[string]any{
-			"name": "handoff delete", "description": "Permanently delete a handoff before expiry.",
+			"name": "handoff delete", "description": "Permanently delete a handoff before expiry using its locally saved owner credential or an administrator credential.",
 			"inputSchema": map[string]any{
 				"type": "object", "required": []string{"code_or_url", "yes"}, "additionalProperties": false,
 				"properties": map[string]any{
@@ -761,8 +948,61 @@ func schemaContract(command string) (map[string]any, error) {
 			"outputSchema": map[string]any{"type": "object", "required": []string{"deleted"}, "properties": map[string]any{"deleted": map[string]any{"type": "boolean", "const": true}}},
 			"_meta":        meta("high-risk-write"),
 		}, nil
+	case "auth":
+		return commandContract("handoff auth", "Manage the optional service administrator credential. OpenGrove login is owned by the OpenGrove app.", "write", map[string]any{
+			"action":      map[string]any{"type": "string", "enum": []string{"login", "status", "logout"}},
+			"server":      stringProperty("Handoff service URL for administrator login."),
+			"token_stdin": booleanProperty("Read the administrator token from stdin."),
+		}, []string{"action"}), nil
+	case "config":
+		return commandContract("handoff config", "Show configuration or set the Handoff service URL.", "write", map[string]any{
+			"action": map[string]any{"type": "string", "enum": []string{"show", "set-server"}},
+			"server": stringProperty("Absolute HTTPS Handoff service URL."),
+		}, []string{"action"}), nil
+	case "doctor":
+		return commandContract("handoff doctor", "Check session discovery, current Agent, OpenGrove login, and service connectivity.", "read", map[string]any{
+			"offline": booleanProperty("Skip service connectivity."),
+		}, nil), nil
+	case "whoami":
+		return commandContract("handoff whoami", "Show CLI version, service, OpenGrove identity, and cloud-compaction availability.", "read", map[string]any{}, nil), nil
+	case "update":
+		return commandContract("handoff update", "Check for or install a SHA-256 verified GitHub release.", "high-risk-write", map[string]any{
+			"check": booleanProperty("Only check; do not replace the executable."),
+			"force": booleanProperty("Reinstall the latest release."),
+		}, nil), nil
+	case "skills":
+		return commandContract("handoff skills", "List, read, or install version-matched Agent Skills embedded in the CLI.", "write", map[string]any{
+			"action": map[string]any{"type": "string", "enum": []string{"list", "read", "install"}},
+			"name":   stringProperty("Embedded Skill name; currently handoff."),
+			"target": map[string]any{"type": "string", "enum": []string{"all", "codex", "claude", "agents"}, "default": "all"},
+			"force":  booleanProperty("Overwrite a different installed Skill."),
+		}, []string{"action"}), nil
+	case "version":
+		return commandContract("handoff version", "Print the CLI version.", "read", map[string]any{}, nil), nil
 	default:
-		return nil, fmt.Errorf("unknown schema %q; expected create, receive, or delete", command)
+		return nil, fmt.Errorf("unknown schema %q; run `handoff schema` to list contracts", command)
+	}
+}
+
+func commandContract(name, description, risk string, properties map[string]any, required []string) map[string]any {
+	input := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           properties,
+	}
+	if len(required) > 0 {
+		input["required"] = required
+	}
+	return map[string]any{
+		"name":         name,
+		"description":  description,
+		"inputSchema":  input,
+		"outputSchema": map[string]any{"type": "object"},
+		"_meta": map[string]any{
+			"envelope_version": "1.0",
+			"risk":             risk,
+			"danger":           risk == "high-risk-write",
+		},
 	}
 }
 
@@ -784,6 +1024,10 @@ func createOutputSchema() map[string]any {
 			},
 			"share_url":    map[string]any{"type": "string", "format": "uri"},
 			"markdown_url": map[string]any{"type": "string", "format": "uri"},
+			"delete_credential_saved": map[string]any{
+				"type":        "boolean",
+				"description": "True when the private per-handoff delete credential was saved locally; the credential itself is never printed.",
+			},
 		},
 	}
 }
@@ -793,9 +1037,10 @@ const skillsUsage = `Read Agent Skills embedded in the handoff CLI so instructio
 Usage:
   handoff skills list [--json]
   handoff skills read <name> [--json]
+  handoff skills install [name] [--target all|codex|claude|agents] [--force]
 `
 
-func runSkills(args []string) error {
+func runSkills(outputFormat string, args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		fmt.Print(skillsUsage)
 		return nil
@@ -815,7 +1060,7 @@ func runSkills(args []string) error {
 			return errors.New("usage: handoff skills list [--json]")
 		}
 		available := skillbundle.List()
-		if *jsonOutput {
+		if outputFormat == "json" || *jsonOutput {
 			return printJSON(map[string]any{"ok": true, "skills": available, "count": len(available)})
 		}
 		for _, skill := range available {
@@ -843,10 +1088,46 @@ func runSkills(args []string) error {
 		if !ok {
 			return fmt.Errorf("unknown skill %q; run `handoff skills list`", name)
 		}
-		if *jsonOutput {
+		if outputFormat == "json" || *jsonOutput {
 			return printJSON(map[string]any{"ok": true, "name": name, "content": content})
 		}
 		fmt.Print(content)
+		return nil
+	case "install":
+		name, rest := leadingArgument(args[1:])
+		flags := flag.NewFlagSet("handoff skills install", flag.ContinueOnError)
+		flags.SetOutput(os.Stderr)
+		target := flags.String("target", "all", "installation target: all, codex, claude, or agents")
+		force := flags.Bool("force", false, "overwrite a different installed Skill")
+		if err := flags.Parse(rest); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if name == "" && len(flags.Args()) == 1 {
+			name = flags.Args()[0]
+		}
+		if name == "" {
+			name = "handoff"
+		}
+		if len(flags.Args()) > 0 {
+			return errors.New("usage: handoff skills install [name] [--target all|codex|claude|agents] [--force]")
+		}
+		content, ok := skillbundle.Read(name)
+		if !ok {
+			return fmt.Errorf("unknown skill %q; run `handoff skills list`", name)
+		}
+		installed, err := installSkill(name, content, *target, *force)
+		if err != nil {
+			return err
+		}
+		if outputFormat == "json" {
+			return printJSON(map[string]any{"ok": true, "name": name, "target": *target, "installed": installed})
+		}
+		for _, path := range installed {
+			fmt.Println(path)
+		}
 		return nil
 	default:
 		return fmt.Errorf("unknown skills command %q; run `handoff skills --help`", args[0])
@@ -958,6 +1239,145 @@ func boolDetail(value bool, yes, no string) string {
 		return yes
 	}
 	return no
+}
+
+func boolWord(value bool) string {
+	if value {
+		return "已配置"
+	}
+	return "未配置"
+}
+
+func boolAvailability(value bool) string {
+	if value {
+		return "可用"
+	}
+	return "不可用（需要 OpenGrove 登录）"
+}
+
+func boolMarker(value bool) string {
+	if value {
+		return "✓"
+	}
+	return "✗"
+}
+
+func createCommandOutput(result types.CreateResponse, credentialSaved bool) map[string]any {
+	return map[string]any{
+		"handoff":                 result.Handoff,
+		"share_url":               result.ShareURL,
+		"markdown_url":            result.MarkdownURL,
+		"delete_credential_saved": credentialSaved,
+	}
+}
+
+func extractOutputFormat(args []string) ([]string, string, error) {
+	cleaned := make([]string, 0, len(args))
+	format := ""
+	setFormat := func(value string) error {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "text" && value != "json" {
+			return errors.New("--format must be text or json")
+		}
+		if format != "" && format != value {
+			return errors.New("--json and --format specify conflicting output formats")
+		}
+		format = value
+		return nil
+	}
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		switch {
+		case argument == "--json":
+			if err := setFormat("json"); err != nil {
+				return nil, "", err
+			}
+		case argument == "--format":
+			if index+1 >= len(args) {
+				return nil, "", errors.New("--format requires text or json")
+			}
+			index++
+			if err := setFormat(args[index]); err != nil {
+				return nil, "", err
+			}
+		case strings.HasPrefix(argument, "--format="):
+			if err := setFormat(strings.TrimPrefix(argument, "--format=")); err != nil {
+				return nil, "", err
+			}
+		default:
+			cleaned = append(cleaned, argument)
+		}
+	}
+	return cleaned, format, nil
+}
+
+func installSkill(name, content, target string, force bool) ([]string, error) {
+	target = strings.ToLower(strings.TrimSpace(target))
+	roots := map[string]string{
+		"codex":  ".codex",
+		"claude": ".claude",
+		"agents": ".agents",
+	}
+	var selected []string
+	if target == "all" {
+		selected = []string{"codex", "claude", "agents"}
+	} else if _, ok := roots[target]; ok {
+		selected = []string{target}
+	} else {
+		return nil, errors.New("--target must be all, codex, claude, or agents")
+	}
+	home := strings.TrimSpace(os.Getenv("HANDOFF_SKILL_HOME"))
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+	}
+	var installed []string
+	for _, selectedTarget := range selected {
+		path := filepath.Join(home, roots[selectedTarget], "skills", name, "SKILL.md")
+		existing, readErr := os.ReadFile(path)
+		if readErr == nil {
+			if string(existing) == content {
+				installed = append(installed, path)
+				continue
+			}
+			if !force {
+				return nil, fmt.Errorf("Skill already exists with different content: %s (use --force to replace it)", path)
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			return nil, readErr
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, err
+		}
+		temp, err := os.CreateTemp(filepath.Dir(path), ".skill-*.tmp")
+		if err != nil {
+			return nil, err
+		}
+		tempPath := temp.Name()
+		if err := temp.Chmod(0o644); err != nil {
+			temp.Close()
+			os.Remove(tempPath)
+			return nil, err
+		}
+		if _, err := io.WriteString(temp, content); err != nil {
+			temp.Close()
+			os.Remove(tempPath)
+			return nil, err
+		}
+		if err := temp.Close(); err != nil {
+			os.Remove(tempPath)
+			return nil, err
+		}
+		if err := os.Rename(tempPath, path); err != nil {
+			os.Remove(tempPath)
+			return nil, err
+		}
+		installed = append(installed, path)
+	}
+	return installed, nil
 }
 
 func leadingArgument(args []string) (string, []string) {

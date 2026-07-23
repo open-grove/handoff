@@ -74,7 +74,7 @@ func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := HTML(handoff)
-	for _, expected := range []string{`class="panel human-panel"`, `class="panel agent-panel"`, `class="brand-mark"><svg viewBox="0 0 128 128"`, `fill="#5FB24A"`, "核心流程已经可用", "Agent 交接上下文", "abcdefghijklmnopqrstuv", "查看安装方法"} {
+	for _, expected := range []string{`class="panel human-panel"`, `class="panel agent-panel"`, `class="brand" href="https://github.com/open-grove/handoff"`, `class="brand-mark"><svg viewBox="0 0 128 128"`, `fill="#5FB24A"`, "核心流程已经可用", "Agent 交接上下文", "abcdefghijklmnopqrstuv", "查看安装方法"} {
 		if !strings.Contains(page, expected) {
 			t.Fatalf("page missing %q: %s", expected, page)
 		}

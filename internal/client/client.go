@@ -17,9 +17,10 @@ import (
 )
 
 type Client struct {
-	Server string
-	Token  string
-	HTTP   *http.Client
+	Server      string
+	Token       string
+	DeleteToken string
+	HTTP        *http.Client
 }
 
 func (client Client) Publish(ctx context.Context, input types.PublishRequest) (types.CreateResponse, error) {
@@ -78,6 +79,9 @@ func (client Client) request(ctx context.Context, method, path string, input, ou
 	}
 	if client.Token != "" {
 		request.Header.Set("Authorization", "Bearer "+client.Token)
+	}
+	if client.DeleteToken != "" {
+		request.Header.Set("X-Handoff-Delete-Token", client.DeleteToken)
 	}
 	httpClient := client.HTTP
 	if httpClient == nil {

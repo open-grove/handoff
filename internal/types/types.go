@@ -90,6 +90,7 @@ type CreateResponse struct {
 	Handoff     Handoff `json:"handoff"`
 	ShareURL    string  `json:"share_url,omitempty"`
 	MarkdownURL string  `json:"markdown_url,omitempty"`
+	DeleteToken string  `json:"delete_token,omitempty"`
 }
 
 type ErrorResponse struct {

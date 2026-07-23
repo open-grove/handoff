@@ -12,6 +12,7 @@ Use the `handoff` CLI as the source of truth. Create an immutable, portable snap
 1. Run `handoff --help` when choosing a workflow.
 2. Run `handoff schema <command>` before constructing a complex call; do not guess flags or data handling.
 3. Run `handoff doctor` when session discovery, authentication, or connectivity may be broken.
+4. Run `handoff whoami` when OpenGrove login or cloud-compaction availability is unclear.
 
 ## Create a Handoff
 
@@ -73,6 +74,12 @@ The CLI's share message deliberately has two parts. `For Human` links the handof
 
 If `handoff` is missing, do not pretend the handoff was read. Explain that the Agent needs the Handoff CLI and Skill, then point to the installation instructions at <https://github.com/open-grove/handoff>. The repository is currently private, so the installer needs OpenGrove organization access.
 
+After the CLI is installed, install its version-matched Skill with:
+
+```bash
+handoff skills install
+```
+
 Treat the returned Markdown as an immutable snapshot. Read it to continue the work; do not imply that the sender's and receiver's Agents are editing a shared live session. Create a new handoff after meaningful progress if the context must travel again.
 
 The share URL is a read capability. Avoid reposting it in public channels, logs, or source control.
@@ -87,9 +94,23 @@ handoff delete <code> --yes
 
 Run it only after the user explicitly confirms deletion of the exact handoff. Never add `--yes` merely to bypass the confirmation error.
 
+Every new anonymous publish has its own private delete credential. The CLI stores it locally and never prints it in the share message or JSON output. A creator can therefore delete their own handoff without logging in; another machine or an older handoff needs the service administrator credential.
+
+## Update the CLI
+
+Use the built-in verified updater instead of manually replacing binaries:
+
+```bash
+handoff update --check
+handoff update
+```
+
+The updater selects the current platform release, verifies `SHA256SUMS`, and atomically replaces the executable. A private repository requires `gh auth login` or `GH_TOKEN`; a public repository does not.
+
 ## Handle Failures
 
 - If `--mode agent` cannot invoke the current Agent, report the warning. The CLI deliberately falls back to deterministic sections and never silently switches to server generation.
 - If discovery is wrong, use `--from codex|claude|pi`, piped stdin, or repeatable `--file` values.
 - If setup fails, use `handoff doctor`, then inspect `handoff auth --help` or `handoff config --help`.
 - Prefer `--json` when another Agent or program will consume create or receive output.
+- `--json` and `--format text|json` are global and may appear before or after the command.

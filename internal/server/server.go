@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -31,6 +32,11 @@ type Store struct {
 	mu  sync.RWMutex
 }
 
+type storedHandoff struct {
+	types.Handoff
+	DeleteTokenHash string `json:"delete_token_hash,omitempty"`
+}
+
 type API struct {
 	Store               *Store
 	Compactor           card.Compactor
@@ -53,10 +59,14 @@ func NewStore(dir string) (*Store, error) {
 }
 
 func (store *Store) Save(handoff types.Handoff) error {
+	return store.SaveOwned(handoff, "")
+}
+
+func (store *Store) SaveOwned(handoff types.Handoff, deleteTokenHash string) error {
 	if !validID.MatchString(handoff.ID) {
 		return errors.New("invalid handoff id")
 	}
-	data, err := json.Marshal(handoff)
+	data, err := json.Marshal(storedHandoff{Handoff: handoff, DeleteTokenHash: strings.TrimSpace(deleteTokenHash)})
 	if err != nil {
 		return err
 	}
@@ -92,10 +102,11 @@ func (store *Store) Get(id string) (types.Handoff, error) {
 	if err != nil {
 		return types.Handoff{}, err
 	}
-	var handoff types.Handoff
-	if err := json.Unmarshal(data, &handoff); err != nil {
+	var stored storedHandoff
+	if err := json.Unmarshal(data, &stored); err != nil {
 		return types.Handoff{}, err
 	}
+	handoff := stored.Handoff
 	if time.Now().After(handoff.ExpiresAt) {
 		_ = store.Delete(id)
 		return types.Handoff{}, os.ErrNotExist
@@ -110,6 +121,34 @@ func (store *Store) Delete(id string) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	return os.Remove(store.path(id))
+}
+
+func (store *Store) DeleteOwned(id, token string) (bool, error) {
+	if !validID.MatchString(id) || strings.TrimSpace(token) == "" {
+		return false, nil
+	}
+	store.mu.RLock()
+	data, err := os.ReadFile(store.path(id))
+	store.mu.RUnlock()
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var stored storedHandoff
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return false, err
+	}
+	expected := strings.TrimSpace(stored.DeleteTokenHash)
+	actual := hashDeleteToken(token)
+	if expected == "" || len(expected) != len(actual) || subtle.ConstantTimeCompare([]byte(expected), []byte(actual)) != 1 {
+		return false, nil
+	}
+	if err := store.Delete(id); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return true, nil
 }
 
 func (store *Store) Cleanup() int {
@@ -291,12 +330,20 @@ func hasContext(input types.Context) bool {
 }
 
 func (api *API) saveCreated(response http.ResponseWriter, handoff types.Handoff) {
-	if err := api.Store.Save(handoff); err != nil {
+	deleteToken, deleteTokenHash, err := newDeleteCredential()
+	if err != nil {
+		api.logger().Error("allocate delete credential", "error", err)
+		writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not create handoff ownership"})
+		return
+	}
+	if err := api.Store.SaveOwned(handoff, deleteTokenHash); err != nil {
 		api.logger().Error("save handoff", "error", err)
 		writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not save handoff"})
 		return
 	}
-	writeJSON(response, http.StatusCreated, api.createResponse(handoff))
+	result := api.createResponse(handoff)
+	result.DeleteToken = deleteToken
+	writeJSON(response, http.StatusCreated, result)
 }
 
 func (api *API) get(response http.ResponseWriter, request *http.Request) {
@@ -309,12 +356,23 @@ func (api *API) get(response http.ResponseWriter, request *http.Request) {
 }
 
 func (api *API) delete(response http.ResponseWriter, request *http.Request) {
-	if !api.authorizedAdmin(request) {
-		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "unauthorized"})
+	id := request.PathValue("id")
+	if api.authorizedAdmin(request) {
+		if err := api.Store.Delete(id); err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not delete handoff"})
+			return
+		}
+		response.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if err := api.Store.Delete(request.PathValue("id")); err != nil && !errors.Is(err, os.ErrNotExist) {
+	authorized, err := api.Store.DeleteOwned(id, request.Header.Get("X-Handoff-Delete-Token"))
+	if err != nil {
+		api.logger().Error("delete owned handoff", "error", err)
 		writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not delete handoff"})
+		return
+	}
+	if !authorized {
+		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "unauthorized"})
 		return
 	}
 	response.WriteHeader(http.StatusNoContent)
@@ -469,6 +527,20 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func newDeleteCredential() (string, string, error) {
+	data := make([]byte, 32)
+	if _, err := rand.Read(data); err != nil {
+		return "", "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(data)
+	return token, hashDeleteToken(token), nil
+}
+
+func hashDeleteToken(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func writeJSON(response http.ResponseWriter, status int, value any) {

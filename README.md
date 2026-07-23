@@ -23,7 +23,10 @@
 # 当前是 open-grove 组织内的私有仓库，需要先有组织访问权限
 gh repo clone open-grove/handoff
 cd handoff
-go install ./cmd/handoff
+./install.sh
+
+# 把与 CLI 同版本的 Skill 安装到 Codex、Claude Code 和通用 Agent 目录
+handoff skills install
 
 # 自动找当前工作区最近的 Codex / Claude / Pi Session
 handoff create "让同事继续完成 CLI 部署"
@@ -61,6 +64,13 @@ handoff receive a-secure-share-code
 handoff receive https://handoff.openmau.com/h/a-secure-share-code
 handoff receive https://handoff.openmau.com/h/a-secure-share-code.md
 handoff receive a-secure-share-code --output HANDOFF.md
+
+# 查看当前登录、服务地址和云端压缩权限
+handoff whoami
+
+# 检查或自动安装 GitHub Release
+handoff update --check
+handoff update
 ```
 
 Agent 可先查合同，不用猜参数：
@@ -71,11 +81,12 @@ handoff schema receive
 handoff schema delete
 handoff skills list
 handoff skills read handoff
+handoff skills install
 handoff create "next goal" --dry-run
 handoff doctor
 ```
 
-`handoff skills read handoff` 输出与当前 CLI 二进制同版本的 Agent Skill，采用与 lark-cli 相同的内嵌 Skill 思路，避免单独分发的说明与命令行为漂移。仓库中的 `skills/handoff` 也可以安装到 Codex 的 Skill 目录。
+`handoff skills read handoff` 输出与当前 CLI 二进制同版本的 Agent Skill，采用与 lark-cli 相同的内嵌 Skill 思路，避免单独分发的说明与命令行为漂移。`handoff skills install` 默认把它安装到 Codex、Claude Code 和通用 Agent 目录；已有不同内容时必须显式使用 `--force`。
 
 ## 一个文件，两层信息
 
@@ -96,10 +107,16 @@ handoff doctor
 | `handoff auth login/status/logout` | write/read/write | 管理可选的管理员删除凭据；云端压缩直接复用 OpenGrove 登录 |
 | `handoff config show/set-server` | read/write | 管理 profile |
 | `handoff doctor [--offline]` | read | 检查会话发现、凭据和服务连通性 |
-| `handoff schema [command]` | read | 输出 create / receive / delete 的 JSON Schema 合同 |
-| `handoff skills list/read` | read | 列出或读取二进制内嵌的 Agent Skill |
+| `handoff whoami` | read | 显示 CLI、OpenGrove 身份和云端压缩权限 |
+| `handoff update [--check]` | high-risk-write/read | 校验 SHA-256 后自动替换为最新 GitHub Release |
+| `handoff schema [command]` | read | 输出所有 CLI 命令的 JSON Schema 合同 |
+| `handoff skills list/read/install` | read/write | 列出、读取或安装二进制内嵌的 Agent Skill |
 
-所有命令支持根级 `--profile NAME`。`create` / `receive` 支持 `--json`。写文件默认不覆盖，显式加 `--force` 才会覆盖。裸分享码默认从 OpenGrove 线上服务读取；profile、`HANDOFF_SERVER` 或完整 URL 可以覆盖服务地址。
+所有命令都接受 `--json` 或 `--format text|json`，参数放在命令前后均可。写文件默认不覆盖，显式加 `--force` 才会覆盖。裸分享码默认从 OpenGrove 线上服务读取；profile、`HANDOFF_SERVER` 或完整 URL 可以覆盖服务地址。
+
+每次匿名发布都会生成一枚独立删除凭证。服务端只存储 SHA-256 哈希，CLI 把原始凭证写入本机权限为 `0600` 的 `ownership.json`，不会打印到分享消息或 `--json` 输出。创建者可直接运行 `handoff delete <code> --yes`；旧分享或其他人创建的分享仍需管理员凭据。
+
+`handoff update` 检测当前系统和架构，从 GitHub Release 下载对应二进制与 `SHA256SUMS`，校验后原子替换当前可执行文件。仓库为 private 时会复用 `GH_TOKEN` / `GITHUB_TOKEN` 或本机 `gh auth login`；公开后无需 GitHub 登录。
 
 ## 上下文发现
 
@@ -130,6 +147,8 @@ handoff doctor
 - `server` 模式要求本机 OpenGrove 已登录；CLI 只读取短期 access token，服务端会向 OpenGrove 账户服务校验。普通发布和接收无需登录。
 - `--review` 会在发布前打开 `$VISUAL` / `$EDITOR` 中的 Markdown；保存关闭后才上传最终 sections。服务端模式为了生成 preview，原文上传发生在 review 之前。
 - 分享 ID 是 128-bit 随机 capability，默认 7 天过期，可以提前删除。
+- 匿名发布返回的删除凭证是另一枚 256-bit capability，只保存在创建者本机；服务端不保存明文。
+- Cloudflare Worker 对匿名创建按请求来源做每分钟 30 次的宽松限流，降低公开 CLI 后的批量滥用风险；它不是计费额度系统。
 - 当前 Agent 不可用时会生成 deterministic handoff 并明确提示，不会静默改用服务端生成。
 - 分享 URL 本身就是读取权限，不应发到公开频道。
 - `HANDOFF.md` 是一次不可变快照。发送方和接收方的 Agent 不会共同修改同一份文件；继续工作后再创建下一份 handoff。
@@ -162,7 +181,7 @@ POST   /v1/handoffs        无需登录
 POST   /v1/handoffs/compact-preview Authorization: Bearer <OpenGrove access token>  只生成 sections，不存储
 POST   /v1/handoffs/compact Authorization: Bearer <OpenGrove access token>  兼容旧客户端：生成并发布
 GET    /v1/handoffs/:id
-DELETE /v1/handoffs/:id    Authorization: Bearer <token>
+DELETE /v1/handoffs/:id    X-Handoff-Delete-Token: <per-handoff token>；管理员也可用 Authorization
 GET    /h/:id              Markdown 渲染的人类页面
 GET    /h/:id.md           原始 HANDOFF.md
 ```

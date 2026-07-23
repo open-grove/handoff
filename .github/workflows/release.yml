@@ -1,0 +1,50 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          actual="$(sed -n 's/^const Version = "\(.*\)"/\1/p' skills/embed.go)"
+          test "$expected" = "$actual"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build release archives
+        shell: bash
+        run: |
+          mkdir -p artifacts stage
+          for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+            goos="${target%_*}"
+            goarch="${target#*_}"
+            rm -rf stage/*
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o stage/handoff ./cmd/handoff
+            tar -C stage -czf "artifacts/handoff_${goos}_${goarch}.tar.gz" handoff
+          done
+          rm -rf stage/*
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o stage/handoff.exe ./cmd/handoff
+          (cd stage && zip -q "../artifacts/handoff_windows_amd64.zip" handoff.exe)
+          (cd artifacts && sha256sum handoff_* > SHA256SUMS)
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" artifacts/* --generate-notes --title "$GITHUB_REF_NAME"

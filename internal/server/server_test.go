@@ -57,7 +57,7 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Handoff.ID) != 22 || !strings.Contains(created.ShareURL, created.Handoff.ID) || created.MarkdownURL != created.ShareURL+".md" {
+	if len(created.Handoff.ID) != 22 || !strings.Contains(created.ShareURL, created.Handoff.ID) || created.MarkdownURL != created.ShareURL+".md" || created.DeleteToken == "" {
 		t.Fatalf("unexpected create response: %#v", created)
 	}
 	if strings.Contains(created.Handoff.Markdown, "super-secret-value") {
@@ -68,7 +68,7 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(stored), "super-secret-value") || strings.Contains(string(stored), `"messages"`) || strings.Contains(string(stored), `"sections"`) {
+	if strings.Contains(string(stored), "super-secret-value") || strings.Contains(string(stored), created.DeleteToken) || strings.Contains(string(stored), `"messages"`) || strings.Contains(string(stored), `"sections"`) {
 		t.Fatal("source request shape or secret was persisted")
 	}
 
@@ -76,9 +76,18 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	getResponse.Body.Close()
 	if getResponse.StatusCode != http.StatusOK {
+		getResponse.Body.Close()
 		t.Fatalf("get status = %d", getResponse.StatusCode)
+	}
+	var fetched types.CreateResponse
+	if err := json.NewDecoder(getResponse.Body).Decode(&fetched); err != nil {
+		getResponse.Body.Close()
+		t.Fatal(err)
+	}
+	getResponse.Body.Close()
+	if fetched.DeleteToken != "" {
+		t.Fatal("GET response leaked the delete credential")
 	}
 
 	pageResponse, err := http.Get(server.URL + "/h/" + created.Handoff.ID)
@@ -101,8 +110,19 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected Markdown response: status=%d type=%q", markdownResponse.StatusCode, markdownResponse.Header.Get("Content-Type"))
 	}
 
+	rejectedRequest, _ := http.NewRequest(http.MethodDelete, server.URL+"/v1/handoffs/"+created.Handoff.ID, nil)
+	rejectedRequest.Header.Set("X-Handoff-Delete-Token", "wrong-token")
+	rejectedResponse, err := http.DefaultClient.Do(rejectedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectedResponse.Body.Close()
+	if rejectedResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong owner credential status = %d", rejectedResponse.StatusCode)
+	}
+
 	deleteRequest, _ := http.NewRequest(http.MethodDelete, server.URL+"/v1/handoffs/"+created.Handoff.ID, nil)
-	deleteRequest.Header.Set("Authorization", "Bearer create-token")
+	deleteRequest.Header.Set("X-Handoff-Delete-Token", created.DeleteToken)
 	deleteResponse, err := http.DefaultClient.Do(deleteRequest)
 	if err != nil {
 		t.Fatal(err)

@@ -20,6 +20,12 @@ const DefaultWWBaseURL = "https://opengrove.creativefitting.cn"
 
 var ErrLoginRequired = errors.New("云端压缩需要先登录 OpenGrove；请打开 OpenGrove 完成登录后重试")
 
+type User struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email,omitempty"`
+	Role   string `json:"role,omitempty"`
+}
+
 type cookieFile struct {
 	Cookies struct {
 		Access struct {
@@ -52,20 +58,28 @@ func AccessToken(now time.Time) (string, error) {
 }
 
 func VerifyAccessToken(ctx context.Context, baseURL, token string, httpClient *http.Client) (bool, error) {
+	user, err := CurrentUser(ctx, baseURL, token, httpClient)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(user.UserID) != "", nil
+}
+
+func CurrentUser(ctx context.Context, baseURL, token string, httpClient *http.Client) (User, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return false, nil
+		return User{}, nil
 	}
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
 		baseURL = DefaultWWBaseURL
 	}
 	if err := validateBaseURL(baseURL); err != nil {
-		return false, err
+		return User{}, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/users/me", nil)
 	if err != nil {
-		return false, err
+		return User{}, err
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token)
@@ -74,24 +88,25 @@ func VerifyAccessToken(ctx context.Context, baseURL, token string, httpClient *h
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
-		return false, fmt.Errorf("verify OpenGrove session: %w", err)
+		return User{}, fmt.Errorf("verify OpenGrove session: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return false, nil
+		return User{}, nil
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return false, fmt.Errorf("verify OpenGrove session: HTTP %d", response.StatusCode)
+		return User{}, fmt.Errorf("verify OpenGrove session: HTTP %d", response.StatusCode)
 	}
 	var envelope struct {
-		Data struct {
-			UserID string `json:"user_id"`
-		} `json:"data"`
+		Data User `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&envelope); err != nil {
-		return false, fmt.Errorf("verify OpenGrove session response: %w", err)
+		return User{}, fmt.Errorf("verify OpenGrove session response: %w", err)
 	}
-	return strings.TrimSpace(envelope.Data.UserID) != "", nil
+	if strings.TrimSpace(envelope.Data.UserID) == "" {
+		return User{}, errors.New("verify OpenGrove session response: missing user_id")
+	}
+	return envelope.Data, nil
 }
 
 func authCookiePaths() []string {

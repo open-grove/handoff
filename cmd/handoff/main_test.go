@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -127,7 +129,7 @@ func TestReviewSectionsAcceptsUnchangedDraft(t *testing.T) {
 }
 
 func TestSchemaContracts(t *testing.T) {
-	for _, command := range []string{"create", "receive", "delete"} {
+	for _, command := range []string{"create", "receive", "delete", "auth", "config", "doctor", "whoami", "update", "skills", "version"} {
 		contract, err := schemaContract(command)
 		if err != nil {
 			t.Fatalf("schemaContract(%q): %v", command, err)
@@ -153,7 +155,7 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 }
 
 func TestDeleteRequiresStructuredConfirmation(t *testing.T) {
-	err := runDelete("", []string{"abcdefghijklmnopqrstuv"})
+	err := runDelete("", "", []string{"abcdefghijklmnopqrstuv"})
 	var structured *structuredError
 	if !errors.As(err, &structured) {
 		t.Fatalf("expected structured confirmation error, got %T: %v", err, err)
@@ -164,5 +166,48 @@ func TestDeleteRequiresStructuredConfirmation(t *testing.T) {
 	envelope, _ := structured.Payload["error"].(map[string]any)
 	if envelope["type"] != "confirmation_required" {
 		t.Fatalf("unexpected error envelope: %#v", structured.Payload)
+	}
+}
+
+func TestGlobalOutputFormatCanAppearBeforeOrAfterCommand(t *testing.T) {
+	for _, input := range [][]string{
+		{"--json", "whoami"},
+		{"whoami", "--json"},
+		{"receive", "abcdefghijklmnopqrstuv", "--format=json"},
+	} {
+		cleaned, format, err := extractOutputFormat(input)
+		if err != nil || format != "json" {
+			t.Fatalf("extractOutputFormat(%v) = %v, %q, %v", input, cleaned, format, err)
+		}
+		for _, argument := range cleaned {
+			if argument == "--json" || strings.HasPrefix(argument, "--format") {
+				t.Fatalf("global output flag was not removed: %v", cleaned)
+			}
+		}
+	}
+	if _, _, err := extractOutputFormat([]string{"--json", "--format", "text", "version"}); err == nil {
+		t.Fatal("expected conflicting formats to fail")
+	}
+}
+
+func TestInstallSkillWritesSupportedAgentLocations(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HANDOFF_SKILL_HOME", root)
+	paths, err := installSkill("handoff", "skill content\n", "all", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 3 {
+		t.Fatalf("installed paths = %#v", paths)
+	}
+	for _, directory := range []string{".codex", ".claude", ".agents"} {
+		path := filepath.Join(root, directory, "skills", "handoff", "SKILL.md")
+		data, err := os.ReadFile(path)
+		if err != nil || string(data) != "skill content\n" {
+			t.Fatalf("installed Skill %s = %q, %v", path, data, err)
+		}
+	}
+	if _, err := installSkill("handoff", "different\n", "all", false); err == nil {
+		t.Fatal("expected existing different Skill to require --force")
 	}
 }

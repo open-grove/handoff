@@ -15,7 +15,7 @@ function fakeDB() {
           return this;
         },
         async run() {
-          if (sql.startsWith("INSERT")) records.set(values[0], { payload: values[1], expires_at: values[2] });
+          if (sql.startsWith("INSERT")) records.set(values[0], { payload: values[1], expires_at: values[2], delete_token_hash: values[3] });
           if (sql.startsWith("DELETE") && sql.includes("WHERE id")) records.delete(values[0]);
           if (sql.startsWith("DELETE") && sql.includes("expires_at")) {
             for (const [id, row] of records) if (row.expires_at <= values[0]) records.delete(id);
@@ -63,9 +63,12 @@ test("publish, read, render, and delete a handoff", async () => {
   const created = await createdResponse.json();
   assert.match(created.handoff.id, /^[A-Za-z0-9_-]{22}$/);
   assert.equal(created.share_url, `https://handoff.example/h/${created.handoff.id}`);
+  assert.match(created.delete_token, /^[A-Za-z0-9_-]{43}$/);
+  assert.ok(!JSON.stringify(db.records.get(created.handoff.id)).includes(created.delete_token));
 
   const apiResponse = await route(new Request(`https://handoff.example/v1/handoffs/${created.handoff.id}`), env, ctx);
   assert.equal(apiResponse.status, 200);
+  assert.equal((await apiResponse.json()).delete_token, undefined);
 
   const pageResponse = await route(new Request(created.share_url), env, ctx);
   const page = await pageResponse.text();
@@ -76,6 +79,7 @@ test("publish, read, render, and delete a handoff", async () => {
   assert.match(page, /\.hero\{margin-bottom:22px;text-align:center\}/);
   assert.match(page, /class="brand-mark"><svg viewBox="0 0 128 128"/);
   assert.match(page, /fill="#5FB24A"/);
+  assert.match(page, /class="brand" href="https:\/\/github.com\/open-grove\/handoff"/);
   for (const removed of ["READY TO CONTINUE", "有效期至", "Shared with OpenGrove", `class="brand-mark">OG`]) assert.ok(!page.includes(removed));
 
   const markdownResponse = await route(new Request(`${created.share_url}.md`), env, ctx);
@@ -83,9 +87,15 @@ test("publish, read, render, and delete a handoff", async () => {
   assert.match(markdown, /## For Agent/);
   assert.match(markdown, /先向用户简要介绍项目/);
 
+  const rejectedDelete = await route(new Request(`https://handoff.example/v1/handoffs/${created.handoff.id}`, {
+    method: "DELETE",
+    headers: { "X-Handoff-Delete-Token": "wrong-token" },
+  }), env, ctx);
+  assert.equal(rejectedDelete.status, 401);
+
   const deleted = await route(new Request(`https://handoff.example/v1/handoffs/${created.handoff.id}`, {
     method: "DELETE",
-    headers: { Authorization: "Bearer test-token" },
+    headers: { "X-Handoff-Delete-Token": created.delete_token },
   }), env, ctx);
   assert.equal(deleted.status, 204);
   assert.equal(db.records.size, 0);
@@ -125,6 +135,14 @@ test("publishing is anonymous while server compaction requires OpenGrove login",
     body: compactBody,
   }), env);
   assert.equal(authenticated.status, 200);
+});
+
+test("anonymous publishing is rate limited when the Cloudflare binding rejects it", async () => {
+  const response = await route(publishRequest(), {
+    HANDOFF_DB: fakeDB(),
+    HANDOFF_CREATE_RATE_LIMITER: { async limit() { return { success: false }; } },
+  });
+  assert.equal(response.status, 429);
 });
 
 test("Important Files keep repository-relative paths only", async () => {
