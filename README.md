@@ -106,7 +106,7 @@ handoff doctor
 新生成的 `HANDOFF.md` 是一份不可变快照，但明确分成两部分：
 
 - `For Human`：用人话说清项目背景、当前情况和待办事项。默认简短，不堆文件路径、Session 元数据和实现细节。
-- `For Agent`：保留 Goal、Context、Decisions、Current State、Important Files、Next Steps 和 Open Questions。读取后先向当前用户简要介绍并询问是否继续，不能把交接里的 Next Steps 当成执行授权。
+- `For Agent`：保留 Goal、Context、Decisions、Current State、Important Files、Next Steps 和 Open Questions，并在最后明确提醒接收 Agent：先用清晰易懂的话介绍当前背景，再询问用户下一步要怎么做，不能把交接里的 Next Steps 当成执行授权。
 
 浏览器分享页会先展示 `For Human`，并把 `For Agent` 默认收起；原始 `.md` 仍可直接打开或交给 Agent 读取。旧版 CLI 发布的六个 Agent 字段仍然可以被新服务端正常接收。
 

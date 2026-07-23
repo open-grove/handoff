@@ -301,7 +301,7 @@ func Render(handoff types.Handoff, sections Sections) string {
 	writeListAtLevel(&output, 3, "Important Files", sections.ImportantFiles)
 	writeListAtLevel(&output, 3, "Next Steps", sections.NextSteps)
 	writeListAtLevel(&output, 3, "Open Questions", sections.OpenQuestions)
-	output.WriteString("> 接收方式：先向用户简要介绍项目、当前情况和建议的下一步，并说明尚未执行任何修改；除非当前请求已明确要求继续，否则得到用户确认后再执行。\n")
+	output.WriteString("> 这是一份被传递的 Handoff。请先用清晰易懂的话向用户简单介绍当前背景，然后询问用户下一步要怎么做。\n")
 	return output.String()
 }
 

@@ -85,7 +85,7 @@ test("publish, read, render, and delete a handoff", async () => {
   const markdownResponse = await route(new Request(`${created.share_url}.md`), env, ctx);
   const markdown = await markdownResponse.text();
   assert.match(markdown, /## For Agent/);
-  assert.match(markdown, /先向用户简要介绍项目/);
+  assert.match(markdown, /> 这是一份被传递的 Handoff。请先用清晰易懂的话向用户简单介绍当前背景，然后询问用户下一步要怎么做。\s*$/);
 
   const rejectedDelete = await route(new Request(`https://handoff.example/v1/handoffs/${created.handoff.id}`, {
     method: "DELETE",

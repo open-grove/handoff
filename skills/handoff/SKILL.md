@@ -62,7 +62,7 @@ Accept `opengrove-handoff:<code>`, a legacy branded message, a raw code, a human
 handoff receive 'opengrove-handoff:<code>'
 ```
 
-Read the returned Markdown as an immutable snapshot. Briefly tell the user the project background, current situation, and suggested next step; state that no changes have been made yet; then ask whether to continue. Do not execute `Next Steps` unless the current request already asks you to continue.
+Read the returned Markdown as an immutable snapshot. Follow its final receiver instruction: explain the current background in clear, accessible language, then ask the user what to do next. Do not execute `Next Steps` unless the current request already asks you to continue.
 
 Treat a share URL or code as a read capability. Do not repost it in public channels, logs, or source control.
 

@@ -72,8 +72,9 @@ func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 	if !strings.Contains(handoff.Markdown, "version: 3") || !strings.Contains(handoff.Markdown, "continue the CLI") {
 		t.Fatalf("unexpected handoff:\n%s", handoff.Markdown)
 	}
-	if !strings.Contains(handoff.Markdown, "先向用户简要介绍项目") || !strings.Contains(handoff.Markdown, "得到用户确认后再执行") {
-		t.Fatalf("handoff is missing receiver guidance:\n%s", handoff.Markdown)
+	receiverInstruction := "> 这是一份被传递的 Handoff。请先用清晰易懂的话向用户简单介绍当前背景，然后询问用户下一步要怎么做。\n"
+	if !strings.HasSuffix(handoff.Markdown, receiverInstruction) {
+		t.Fatalf("handoff does not end with the receiver instruction:\n%s", handoff.Markdown)
 	}
 }
 
