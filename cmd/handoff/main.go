@@ -251,7 +251,11 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	commandTimeout := 6 * time.Minute
+	if selectedMode == "server" {
+		commandTimeout = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	apiClient := client.Client{Server: profile.Server}
 	sections := card.FallbackSections(goal, contextSource)

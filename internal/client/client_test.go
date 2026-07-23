@@ -2,9 +2,13 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/open-grove/handoff/internal/types"
 )
 
 func TestValidateServerRequiresHTTPSOutsideLoopback(t *testing.T) {
@@ -31,5 +35,56 @@ func TestDeleteUsesPerHandoffCredentialHeader(t *testing.T) {
 	err := (Client{Server: server.URL, DeleteToken: "owner-secret", HTTP: server.Client()}).Delete(context.Background(), "abcdefghijklmnopqrstuv")
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPreviewServerCompactionConsumesEventStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !strings.Contains(request.Header.Get("Accept"), "text/event-stream") {
+			t.Fatalf("Accept = %q", request.Header.Get("Accept"))
+		}
+		response.Header().Set("Content-Type", "text/event-stream")
+		_, _ = response.Write([]byte("event: start\ndata: {\"request_id\":\"request-1\"}\n\n"))
+		_, _ = response.Write([]byte("event: delta\ndata: {\"text\":\"partial\"}\n\n"))
+		result, _ := json.Marshal(types.CompactPreviewResponse{
+			Generator: "server:agent-plan",
+			Sections: types.Sections{
+				HumanBackground: "Background",
+				HumanStatus:     "Ready",
+				HumanTodos:      []string{"Continue"},
+				Context:         "Known",
+				CurrentState:    "Ready",
+				NextSteps:       []string{"Continue"},
+			},
+		})
+		_, _ = response.Write([]byte("event: result\ndata: " + string(result) + "\n\n"))
+	}))
+	defer server.Close()
+
+	preview, err := (Client{Server: server.URL, HTTP: server.Client()}).PreviewServerCompaction(
+		context.Background(),
+		types.CompactRequest{Goal: "Continue", Context: types.Context{Source: "stdin", Messages: []types.Message{{Role: "user", Text: "Ready"}}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Generator != "server:agent-plan" || preview.Sections.Context != "Known" {
+		t.Fatalf("preview = %#v", preview)
+	}
+}
+
+func TestPreviewServerCompactionReportsStreamError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "text/event-stream")
+		_, _ = response.Write([]byte("event: error\ndata: {\"error\":\"upstream reset\"}\n\n"))
+	}))
+	defer server.Close()
+
+	_, err := (Client{Server: server.URL, HTTP: server.Client()}).PreviewServerCompaction(
+		context.Background(),
+		types.CompactRequest{Goal: "Continue"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "upstream reset") {
+		t.Fatalf("error = %v", err)
 	}
 }

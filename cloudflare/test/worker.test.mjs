@@ -192,3 +192,74 @@ test("Agent Plan SSE responses are assembled into one result", async () => {
   ].join("\n\n"), { headers: { "Content-Type": "text/event-stream" } });
   assert.equal(await readAgentPlanText(response), '{"human_background":"A","human_status":"B"}');
 });
+
+test("compact preview streams before Agent Plan finishes and returns diagnostics", async () => {
+  const completeSections = JSON.stringify({
+    human_background: "A",
+    human_status: "B",
+    human_todos: ["C"],
+    context: "D",
+    decisions: [],
+    current_state: "E",
+    important_files: [],
+    next_steps: ["F"],
+    open_questions: [],
+  });
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  const upstream = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      controller.enqueue(encoder.encode(
+        `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: completeSections.slice(0, 20) } })}\n\n`,
+      ));
+      await released;
+      controller.enqueue(encoder.encode(
+        `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: completeSections.slice(20) } })}\n\n`,
+      ));
+      controller.enqueue(encoder.encode(
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":123}}\n\n',
+      ));
+      controller.close();
+    },
+  });
+  const env = {
+    HANDOFF_DB: fakeDB(),
+    ARK_AGENT_PLAN_API_KEY: "secret",
+    OPENGROVE_AUTH_FETCH: async () => Response.json({ data: { user_id: "user-1" } }),
+    ARK_AGENT_PLAN_FETCH: async () => new Response(upstream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream", "x-request-id": "upstream-1" },
+    }),
+  };
+  const compactBody = JSON.stringify({
+    goal: "continue",
+    context: { source: "stdin", messages: [{ role: "user", text: "known context" }] },
+  });
+  const streamed = await route(new Request("https://handoff.example/v1/handoffs/compact-preview", {
+    method: "POST",
+    headers: {
+      Accept: "text/event-stream",
+      Authorization: "Bearer valid-opengrove-token",
+      "Content-Type": "application/json",
+    },
+    body: compactBody,
+  }), env);
+  assert.match(streamed.headers.get("Content-Type"), /text\/event-stream/);
+  const reader = streamed.body.getReader();
+  const first = new TextDecoder().decode((await reader.read()).value);
+  assert.match(first, /event: start/);
+  release();
+
+  let rest = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    rest += new TextDecoder().decode(value);
+  }
+  assert.match(rest, /event: delta/);
+  assert.match(rest, /event: result/);
+  assert.match(rest, /"generator":"server:agent-plan"/);
+  assert.match(rest, /"output_tokens":123/);
+  assert.match(rest, /"upstream_request_id":"upstream-1"/);
+});

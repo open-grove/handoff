@@ -72,6 +72,10 @@ handoff update --check
 handoff update
 ```
 
+云端压缩使用端到端 SSE：Worker 会立即建立响应，并在等待模型首 token
+期间持续发送心跳，随后逐段转发生成结果。Kimi 的长上下文请求可能需要数分钟，
+CLI 会以 15 分钟为整体边界；普通发布、接收等请求仍使用较短超时。
+
 Agent 可先查合同，不用猜参数：
 
 ```bash
