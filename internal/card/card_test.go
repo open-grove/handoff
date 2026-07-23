@@ -55,6 +55,9 @@ func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 	if !strings.Contains(handoff.Markdown, "version: 3") || !strings.Contains(handoff.Markdown, "continue the CLI") {
 		t.Fatalf("unexpected handoff:\n%s", handoff.Markdown)
 	}
+	if !strings.Contains(handoff.Markdown, "先向用户简要介绍项目") || !strings.Contains(handoff.Markdown, "得到用户确认后再执行") {
+		t.Fatalf("handoff is missing receiver guidance:\n%s", handoff.Markdown)
+	}
 }
 
 func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
@@ -87,8 +90,57 @@ func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
 	if !strings.Contains(page, `.human-content{display:grid;grid-template-columns:1fr;gap:0}`) {
 		t.Fatalf("human summary is not rendered as three full-width rows: %s", page)
 	}
+	if !strings.Contains(page, `.hero{max-width:760px;margin:0 auto 22px;text-align:center}`) {
+		t.Fatalf("page title is not centered: %s", page)
+	}
 	if strings.Index(page, "核心流程已经可用") > strings.Index(page, "Agent 交接上下文") {
 		t.Fatal("human summary must appear before agent context")
+	}
+}
+
+func TestImportantFilesAreRepositoryRelative(t *testing.T) {
+	input := types.Context{
+		Source: "codex",
+		Repo: types.Repository{
+			Root: "/Users/alice/work/demo",
+			ChangedFiles: []string{
+				"/Users/alice/work/demo/internal/card/card.go",
+				"/Users/alice/notes/private.md",
+				"README.md",
+				"../outside.txt",
+			},
+		},
+	}
+	sanitized := SanitizeContext(input)
+	if got := strings.Join(sanitized.Repo.ChangedFiles, ","); got != "internal/card/card.go,README.md" {
+		t.Fatalf("changed files = %q", got)
+	}
+
+	now := time.Now().UTC()
+	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", "continue", types.SourceRef{Kind: "codex"}, Sections{
+		Context:      "Known",
+		CurrentState: "Ready",
+		ImportantFiles: []string{
+			"$WORKSPACE/cloudflare/src/index.mjs",
+			"$HOME/Downloads/private.txt",
+			"/Users/alice/work/demo/README.md",
+			"internal/card/card.go",
+			"../outside.txt",
+		},
+		NextSteps: []string{"Continue"},
+	}, "agent:codex", now, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"cloudflare/src/index.mjs", "internal/card/card.go"} {
+		if !strings.Contains(handoff.Markdown, "- "+expected) {
+			t.Fatalf("missing portable path %q:\n%s", expected, handoff.Markdown)
+		}
+	}
+	for _, forbidden := range []string{"$HOME", "/Users/", "../outside"} {
+		if strings.Contains(handoff.Markdown, forbidden) {
+			t.Fatalf("handoff contains machine-specific path %q:\n%s", forbidden, handoff.Markdown)
+		}
 	}
 }
 

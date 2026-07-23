@@ -42,17 +42,7 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 		},
 	}
 	body, _ := json.Marshal(input)
-	unauthorized, err := http.Post(server.URL+"/v1/handoffs", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	unauthorized.Body.Close()
-	if unauthorized.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("unauthorized status = %d", unauthorized.StatusCode)
-	}
-
 	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/handoffs", bytes.NewReader(body))
-	request.Header.Set("Authorization", "Bearer create-token")
 	request.Header.Set("Content-Type", "application/json")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -169,10 +159,26 @@ func TestCompactPreviewDoesNotStoreHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer((&API{Store: store, Compactor: previewCompactor{}, DefaultTTL: time.Hour}).Handler())
+	server := httptest.NewServer((&API{
+		Store: store, Compactor: previewCompactor{}, DefaultTTL: time.Hour,
+		VerifyOpenGroveUser: func(_ context.Context, token string) (bool, error) {
+			return token == "opengrove-access", nil
+		},
+	}).Handler())
 	defer server.Close()
 	body := `{"goal":"continue","context":{"source":"stdin","messages":[{"role":"user","text":"raw transcript"}]}}`
-	response, err := http.Post(server.URL+"/v1/handoffs/compact-preview", "application/json", strings.NewReader(body))
+	unauthorized, err := http.Post(server.URL+"/v1/handoffs/compact-preview", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorized.Body.Close()
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized preview status = %d", unauthorized.StatusCode)
+	}
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/handoffs/compact-preview", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer opengrove-access")
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}

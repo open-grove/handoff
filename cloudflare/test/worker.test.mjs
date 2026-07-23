@@ -30,10 +30,10 @@ function fakeDB() {
   };
 }
 
-function publishRequest(token = "test-token") {
+function publishRequest() {
   return new Request("https://handoff.example/v1/handoffs", {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       goal: "继续交接工具",
       source: { kind: "codex" },
@@ -73,10 +73,13 @@ test("publish, read, render, and delete a handoff", async () => {
   assert.match(page, /<h1>继续交接工具<\/h1>/);
   assert.match(page, /核心流程可用/);
   assert.match(page, /\.human-content\{display:grid;grid-template-columns:1fr;gap:0\}/);
+  assert.match(page, /\.hero\{margin-bottom:22px;text-align:center\}/);
   for (const removed of ["READY TO CONTINUE", "有效期至", "Shared with OpenGrove"]) assert.ok(!page.includes(removed));
 
   const markdownResponse = await route(new Request(`${created.share_url}.md`), env, ctx);
-  assert.match(await markdownResponse.text(), /## For Agent/);
+  const markdown = await markdownResponse.text();
+  assert.match(markdown, /## For Agent/);
+  assert.match(markdown, /先向用户简要介绍项目/);
 
   const deleted = await route(new Request(`https://handoff.example/v1/handoffs/${created.handoff.id}`, {
     method: "DELETE",
@@ -86,12 +89,63 @@ test("publish, read, render, and delete a handoff", async () => {
   assert.equal(db.records.size, 0);
 });
 
-test("write endpoints require authentication", async () => {
-  const response = await route(publishRequest("wrong-token"), {
+test("publishing is anonymous while server compaction requires OpenGrove login", async () => {
+  const env = {
     HANDOFF_DB: fakeDB(),
     HANDOFF_API_TOKEN: "test-token",
+    OPENGROVE_AUTH_FETCH: async (_url, init) => {
+      const token = String(init?.headers?.Authorization || "");
+      if (token !== "Bearer valid-opengrove-token") {
+        return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+      }
+      return Response.json({ data: { user_id: "user-1" } });
+    },
+  };
+  assert.equal((await route(publishRequest(), env)).status, 201);
+
+  const compactBody = JSON.stringify({
+    goal: "continue",
+    context: { source: "stdin", messages: [{ role: "user", text: "known context" }] },
   });
-  assert.equal(response.status, 401);
+  const unauthenticated = await route(new Request("https://handoff.example/v1/handoffs/compact-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: compactBody,
+  }), env);
+  assert.equal(unauthenticated.status, 401);
+
+  const authenticated = await route(new Request("https://handoff.example/v1/handoffs/compact-preview", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer valid-opengrove-token",
+      "Content-Type": "application/json",
+    },
+    body: compactBody,
+  }), env);
+  assert.equal(authenticated.status, 200);
+});
+
+test("Important Files keep repository-relative paths only", async () => {
+  const request = publishRequest();
+  const body = await request.json();
+  body.sections.important_files = [
+    "$WORKSPACE/cloudflare/src/index.mjs",
+    "$HOME/Downloads/private.txt",
+    "/Users/alice/work/demo/README.md",
+    "internal/card/card.go",
+    "../outside.txt",
+  ];
+  const response = await route(new Request(request.url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }), { HANDOFF_DB: fakeDB() });
+  assert.equal(response.status, 201);
+  const created = await response.json();
+  assert.deepEqual(
+    created.handoff.markdown.match(/### Important Files\n\n([\s\S]*?)\n\n### Next Steps/)?.[1].split("\n"),
+    ["- cloudflare/src/index.mjs", "- internal/card/card.go"],
+  );
 });
 
 test("HTML escapes untrusted content", () => {

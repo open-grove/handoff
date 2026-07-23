@@ -20,6 +20,7 @@ import (
 	"github.com/open-grove/handoff/internal/card"
 	"github.com/open-grove/handoff/internal/client"
 	"github.com/open-grove/handoff/internal/config"
+	"github.com/open-grove/handoff/internal/opengroveauth"
 	"github.com/open-grove/handoff/internal/source"
 	"github.com/open-grove/handoff/internal/types"
 	skillbundle "github.com/open-grove/handoff/skills"
@@ -48,9 +49,9 @@ Commands:
   create       Generate with the current Agent and share a handoff    Risk: write
   receive      Fetch a handoff by code or URL                         Risk: read
   delete       Delete a handoff before it expires                     Risk: high-risk-write
-  auth         Login, status, and logout
+  auth         Manage the optional administrator credential
   config       Show or update CLI configuration
-  doctor       Check local source detection, auth, and connectivity   Risk: read
+  doctor       Check source detection, OpenGrove login, and connectivity   Risk: read
   schema       Print machine-readable command contracts               Risk: read
   skills       List or read Agent Skills embedded in this CLI          Risk: read
   version      Print the CLI version
@@ -233,7 +234,7 @@ func runCreate(profileName string, args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
-	apiClient := client.Client{Server: profile.Server, Token: profile.Token}
+	apiClient := client.Client{Server: profile.Server}
 	sections := card.FallbackSections(goal, contextSource)
 	generator := "deterministic"
 	var generationWarning error
@@ -250,7 +251,12 @@ func runCreate(profileName string, args []string) error {
 			generator = "agent:" + runtime
 		}
 	case "server":
-		preview, previewErr := apiClient.PreviewServerCompaction(ctx, types.CompactRequest{
+		accessToken, authErr := opengroveauth.AccessToken(time.Now())
+		if authErr != nil {
+			return authErr
+		}
+		compactionClient := client.Client{Server: profile.Server, Token: accessToken}
+		preview, previewErr := compactionClient.PreviewServerCompaction(ctx, types.CompactRequest{
 			Goal: goal, Context: contextSource,
 		})
 		if previewErr != nil {
@@ -559,7 +565,12 @@ func runAuth(profileName string, args []string) error {
 		fmt.Printf("Logged in to %s as profile %q.\n", strings.TrimRight(*server, "/"), name)
 		return nil
 	case "status":
-		return printJSON(map[string]any{"profile": name, "server": profile.Server, "authenticated": profile.Token != ""})
+		_, openGroveAuthErr := opengroveauth.AccessToken(time.Now())
+		return printJSON(map[string]any{
+			"profile": name, "server": profile.Server,
+			"opengrove_authenticated": openGroveAuthErr == nil,
+			"admin_token_configured":  profile.Token != "",
+		})
 	case "logout":
 		profile.Token = ""
 		cfg.Profiles[name] = profile
@@ -588,7 +599,7 @@ func runConfig(profileName string, args []string) error {
 	switch args[0] {
 	case "show":
 		path, _ := config.Path()
-		return printJSON(map[string]any{"profile": name, "server": profile.Server, "authenticated": profile.Token != "", "path": path})
+		return printJSON(map[string]any{"profile": name, "server": profile.Server, "admin_token_configured": profile.Token != "", "path": path})
 	case "set-server":
 		if len(args) != 2 {
 			return errors.New("usage: handoff config set-server <url>")
@@ -623,9 +634,10 @@ func runDoctor(profileName string, args []string) error {
 	if err != nil {
 		return err
 	}
+	_, openGroveAuthErr := opengroveauth.AccessToken(time.Now())
 	checks := []map[string]any{
 		{"check": "profile", "ok": true, "detail": name},
-		{"check": "auth", "ok": profile.Token != "", "detail": boolDetail(profile.Token != "", "token configured", "token missing")},
+		{"check": "opengrove_login", "ok": openGroveAuthErr == nil, "detail": boolDetail(openGroveAuthErr == nil, "available for server compaction", "not logged in; only server compaction is unavailable")},
 	}
 	contextSource, sourceErr := source.Load(source.Options{Kind: "auto", NoGit: true})
 	if sourceErr != nil {
@@ -639,7 +651,7 @@ func runDoctor(profileName string, args []string) error {
 			checks = append(checks, map[string]any{"check": "current_agent", "ok": true, "detail": runtime + " (existing auth/config/default model)"})
 		}
 	}
-	failed := profile.Token == ""
+	failed := false
 	if !*offline {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_, healthErr := (client.Client{Server: profile.Server, Token: profile.Token}).Health(ctx)
@@ -719,6 +731,7 @@ func schemaContract(command string) (map[string]any, error) {
 				"default_upload":       "generated sections only",
 				"default_model_config": "inherits the current Agent runtime",
 				"native_compact":       "reuses a readable native summary plus its retained tail; never invokes native /compact",
+				"server_auth":          "requires an active local OpenGrove login; publishing does not require login",
 			},
 		}, nil
 	case "receive":

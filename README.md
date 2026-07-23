@@ -1,6 +1,6 @@
 # handoff
 
-`handoff` 是一个给人和 Agent 用的通用上下文交接 CLI。它不绑定 OpenGrove，也不复制 Codex / Claude 的原生 Session；它把当前上下文变成一份可阅读、可追溯、模型无关的 `HANDOFF.md`。
+`handoff` 是一个给人和 Agent 用的通用上下文交接 CLI。它不复制 Codex / Claude 的原生 Session；它把当前上下文变成一份可阅读、可追溯、模型无关的 `HANDOFF.md`。默认生成与发布无需登录，只有可选的云端压缩复用本机 OpenGrove 登录。
 
 ```text
 当前 Session（只读快照，不执行 /compact）
@@ -25,10 +25,6 @@ gh repo clone open-grove/handoff
 cd handoff
 go install ./cmd/handoff
 
-# 首次配置；Token 通过 stdin 读取，避免进入 shell history
-printf '%s' "$HANDOFF_TOKEN" | \
-  handoff auth login --server https://handoff.openmau.com --token-stdin
-
 # 自动找当前工作区最近的 Codex / Claude / Pi Session
 handoff create "让同事继续完成 CLI 部署"
 
@@ -51,6 +47,7 @@ handoff create "continue" --review
 handoff create "continue" --mode local
 
 # 可选：明确同意把保留后的上下文交给 handoffd / Agent Plan 生成
+# 仅此模式要求本机 OpenGrove 已登录
 handoff create "continue" --mode server --include-transcript
 
 # 任何 Agent 都能用的通用入口
@@ -85,7 +82,7 @@ handoff doctor
 新生成的 `HANDOFF.md` 是一份不可变快照，但明确分成两部分：
 
 - `For Human`：用人话说清项目背景、当前情况和待办事项。默认简短，不堆文件路径、Session 元数据和实现细节。
-- `For Agent`：保留 Goal、Context、Decisions、Current State、Important Files、Next Steps 和 Open Questions，用来继续实际工作。
+- `For Agent`：保留 Goal、Context、Decisions、Current State、Important Files、Next Steps 和 Open Questions。读取后先向当前用户简要介绍并询问是否继续，不能把交接里的 Next Steps 当成执行授权。
 
 浏览器分享页会先展示 `For Human`，并把 `For Agent` 默认收起；原始 `.md` 仍可直接打开或交给 Agent 读取。旧版 CLI 发布的六个 Agent 字段仍然可以被新服务端正常接收。
 
@@ -96,7 +93,7 @@ handoff doctor
 | `handoff create "goal"` | write | 只读上下文，由当前 Agent 生成，默认只上传 sections |
 | `handoff receive <reference>` | read | 接受 branded reference、分享码、人类页面或 `.md` URL |
 | `handoff delete <code> --yes` | high-risk-write | 在 TTL 到期前删除交接卡 |
-| `handoff auth login/status/logout` | write/read/write | 管理服务凭据 |
+| `handoff auth login/status/logout` | write/read/write | 管理可选的管理员删除凭据；云端压缩直接复用 OpenGrove 登录 |
 | `handoff config show/set-server` | read/write | 管理 profile |
 | `handoff doctor [--offline]` | read | 检查会话发现、凭据和服务连通性 |
 | `handoff schema [command]` | read | 输出 create / receive / delete 的 JSON Schema 合同 |
@@ -126,10 +123,11 @@ handoff doctor
 ## 隐私与故障降级
 
 - CLI 在调用当前 Agent 前先脱敏：API key、Bearer token、密码、私钥块会被替换；服务端会再次清理最终 sections。
-- 本机绝对路径改写为 `$HOME` / `$WORKSPACE`。
+- `Important Files` 只保留仓库相对路径；本机绝对路径和仓库外文件会被移除。
 - 默认 `agent` 和 `local` 模式下，handoffd 只收到最终 sections，完整 Session 不会发给 handoffd；服务端只持久化最终交接卡。
 - `agent` 模式由本机当前 Agent CLI 发起。如果该 Agent 使用云模型，脱敏后的上下文仍会发送给它已配置的模型服务商，但不会另发给 handoffd 的模型。
 - `server` 模式必须显式同时提供 `--include-transcript`。handoffd 会用保留后的上下文生成 preview，但不存储原文；最终仍只持久化用户确认后的交接卡。
+- `server` 模式要求本机 OpenGrove 已登录；CLI 只读取短期 access token，服务端会向 OpenGrove 账户服务校验。普通发布和接收无需登录。
 - `--review` 会在发布前打开 `$VISUAL` / `$EDITOR` 中的 Markdown；保存关闭后才上传最终 sections。服务端模式为了生成 preview，原文上传发生在 review 之前。
 - 分享 ID 是 128-bit 随机 capability，默认 7 天过期，可以提前删除。
 - 当前 Agent 不可用时会生成 deterministic handoff 并明确提示，不会静默改用服务端生成。
@@ -140,7 +138,7 @@ handoff doctor
 
 ```bash
 cp .env.example .env
-# 编辑 .env：生产必须设 HANDOFF_API_TOKEN
+# HANDOFF_API_TOKEN 仅用于管理员提前删除，不影响匿名发布
 set -a; . ./.env; set +a
 go run ./cmd/handoffd
 ```
@@ -160,9 +158,9 @@ HTTP API：
 ```text
 GET    /healthz
 GET    /v1/schema/create
-POST   /v1/handoffs        Authorization: Bearer <token>
-POST   /v1/handoffs/compact-preview Authorization: Bearer <token>  只生成 sections，不存储
-POST   /v1/handoffs/compact Authorization: Bearer <token>  兼容旧客户端：生成并发布
+POST   /v1/handoffs        无需登录
+POST   /v1/handoffs/compact-preview Authorization: Bearer <OpenGrove access token>  只生成 sections，不存储
+POST   /v1/handoffs/compact Authorization: Bearer <OpenGrove access token>  兼容旧客户端：生成并发布
 GET    /v1/handoffs/:id
 DELETE /v1/handoffs/:id    Authorization: Bearer <token>
 GET    /h/:id              Markdown 渲染的人类页面

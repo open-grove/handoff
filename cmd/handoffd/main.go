@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/open-grove/handoff/internal/card"
+	"github.com/open-grove/handoff/internal/opengroveauth"
 	"github.com/open-grove/handoff/internal/server"
 )
 
@@ -21,10 +21,6 @@ func main() {
 	listenAddress := envOr("HANDOFF_LISTEN_ADDR", ":7391")
 	dataDir := envOr("HANDOFF_DATA_DIR", "./data")
 	apiToken := strings.TrimSpace(os.Getenv("HANDOFF_API_TOKEN"))
-	if apiToken == "" && !boolEnv("HANDOFF_ALLOW_ANONYMOUS_CREATE") {
-		logger.Error("HANDOFF_API_TOKEN is required; set HANDOFF_ALLOW_ANONYMOUS_CREATE=1 only for local development")
-		os.Exit(1)
-	}
 	store, err := server.NewStore(dataDir)
 	if err != nil {
 		logger.Error("initialize store", "error", err)
@@ -42,9 +38,12 @@ func main() {
 	}
 
 	api := &server.API{
-		Store:      store,
-		Compactor:  compactor,
-		Token:      apiToken,
+		Store:     store,
+		Compactor: compactor,
+		Token:     apiToken,
+		VerifyOpenGroveUser: func(ctx context.Context, token string) (bool, error) {
+			return opengroveauth.VerifyAccessToken(ctx, envOr("OPENGROVE_WW_BASE_URL", opengroveauth.DefaultWWBaseURL), token, nil)
+		},
 		PublicURL:  strings.TrimSpace(os.Getenv("HANDOFF_PUBLIC_URL")),
 		DefaultTTL: durationEnv("HANDOFF_DEFAULT_TTL", 7*24*time.Hour),
 		MaxTTL:     durationEnv("HANDOFF_MAX_TTL", 30*24*time.Hour),
@@ -80,11 +79,6 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func boolEnv(name string) bool {
-	value, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv(name)))
-	return value
 }
 
 func durationEnv(name string, fallback time.Duration) time.Duration {

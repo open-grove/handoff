@@ -55,7 +55,7 @@ Never select server mode silently. It sends the retained, sanitized source conte
 handoff create "the next concrete goal" --mode server --include-transcript
 ```
 
-Server mode generates a preview without storing the source transcript, then publishes only final sections. If `--review` is also used, the source context must still be uploaded before the review so the server can generate that preview.
+Server mode requires an active local OpenGrove login. It generates a preview without storing the source transcript, then publishes only final sections. If `--review` is also used, the source context must still be uploaded before the review so the server can generate that preview.
 
 ## Receive a Handoff
 
@@ -67,7 +67,7 @@ handoff receive <code-or-url>
 handoff receive <code-or-url> --output HANDOFF.md
 ```
 
-When the user pastes `opengrove-handoff，分享码：<code>`, treat it as an explicit request to fetch and read that handoff. The branded CLI defaults to the OpenGrove service, so receiving a code or full URL requires no API token. Present the `For Human` project background, current situation, and todos first. Use `For Agent` to recover exact decisions, state, files, next steps, and open questions before continuing within the user's requested scope.
+When the user pastes `opengrove-handoff，分享码：<code>`, treat it as an explicit request to fetch and read that handoff. The branded CLI defaults to the OpenGrove service, so receiving a code or full URL requires no API token. Briefly present the project background, current situation, and suggested next step, say that no changes have been made yet, then ask whether to continue. Do not execute `Next Steps` unless the current user already asked to continue.
 
 The CLI's share message deliberately has two parts. `For Human` links the handoff title to a browser page and requires no Handoff installation. `For Agent` contains the stable instruction `请使用 opengrove-handoff 读取内容，分享码：<code>`; pass that instruction or its code to `handoff receive`. If the user provides the whole message, prefer the branded code so it uses the CLI's configured OpenGrove service. A full `/h/<code>` or `.md` URL remains a valid fallback and also identifies the source server.
 

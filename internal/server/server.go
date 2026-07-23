@@ -32,13 +32,14 @@ type Store struct {
 }
 
 type API struct {
-	Store      *Store
-	Compactor  card.Compactor
-	Token      string
-	PublicURL  string
-	DefaultTTL time.Duration
-	MaxTTL     time.Duration
-	Logger     *slog.Logger
+	Store               *Store
+	Compactor           card.Compactor
+	Token               string
+	VerifyOpenGroveUser func(context.Context, string) (bool, error)
+	PublicURL           string
+	DefaultTTL          time.Duration
+	MaxTTL              time.Duration
+	Logger              *slog.Logger
 }
 
 func NewStore(dir string) (*Store, error) {
@@ -159,7 +160,7 @@ func (api *API) createSchema(response http.ResponseWriter, _ *http.Request) {
 		"method":   "POST",
 		"path":     "/v1/handoffs",
 		"risk":     "write",
-		"auth":     "Bearer token",
+		"auth":     "none",
 		"required": []string{"goal", "source.kind", "sections", "generator"},
 		"privacy":  "accepts generated sections only; no source transcript",
 		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
@@ -171,7 +172,7 @@ func (api *API) compactSchema(response http.ResponseWriter, _ *http.Request) {
 		"method":   "POST",
 		"path":     "/v1/handoffs/compact-preview",
 		"risk":     "write",
-		"auth":     "Bearer token",
+		"auth":     "OpenGrove access token",
 		"required": []string{"goal", "context.source", "context.summary or context.messages"},
 		"privacy":  "explicit opt-in: sends retained source context to the server compactor; returns sections without storing a handoff",
 		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
@@ -179,10 +180,6 @@ func (api *API) compactSchema(response http.ResponseWriter, _ *http.Request) {
 }
 
 func (api *API) publish(response http.ResponseWriter, request *http.Request) {
-	if !api.authorized(request) {
-		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "unauthorized"})
-		return
-	}
 	request.Body = http.MaxBytesReader(response, request.Body, maxBodyBytes)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
@@ -215,8 +212,7 @@ func (api *API) publish(response http.ResponseWriter, request *http.Request) {
 }
 
 func (api *API) compact(response http.ResponseWriter, request *http.Request) {
-	if !api.authorized(request) {
-		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "unauthorized"})
+	if !api.requireOpenGroveUser(response, request) {
 		return
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, maxBodyBytes)
@@ -256,8 +252,7 @@ func (api *API) compact(response http.ResponseWriter, request *http.Request) {
 }
 
 func (api *API) compactPreview(response http.ResponseWriter, request *http.Request) {
-	if !api.authorized(request) {
-		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "unauthorized"})
+	if !api.requireOpenGroveUser(response, request) {
 		return
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, maxBodyBytes)
@@ -314,7 +309,7 @@ func (api *API) get(response http.ResponseWriter, request *http.Request) {
 }
 
 func (api *API) delete(response http.ResponseWriter, request *http.Request) {
-	if !api.authorized(request) {
+	if !api.authorizedAdmin(request) {
 		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "unauthorized"})
 		return
 	}
@@ -344,12 +339,43 @@ func (api *API) page(response http.ResponseWriter, request *http.Request) {
 	_, _ = io.WriteString(response, card.HTML(handoff))
 }
 
-func (api *API) authorized(request *http.Request) bool {
-	if api.Token == "" {
-		return true
+func (api *API) requireOpenGroveUser(response http.ResponseWriter, request *http.Request) bool {
+	token := bearerToken(request)
+	if token == "" {
+		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "OpenGrove login required"})
+		return false
 	}
-	provided := strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer "))
+	if api.VerifyOpenGroveUser == nil {
+		writeJSON(response, http.StatusServiceUnavailable, types.ErrorResponse{Error: "OpenGrove authentication is unavailable"})
+		return false
+	}
+	ok, err := api.VerifyOpenGroveUser(request.Context(), token)
+	if err != nil {
+		api.logger().Warn("verify OpenGrove user", "error", err)
+		writeJSON(response, http.StatusServiceUnavailable, types.ErrorResponse{Error: "OpenGrove authentication is temporarily unavailable"})
+		return false
+	}
+	if !ok {
+		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "OpenGrove login required"})
+		return false
+	}
+	return true
+}
+
+func (api *API) authorizedAdmin(request *http.Request) bool {
+	if api.Token == "" {
+		return false
+	}
+	provided := bearerToken(request)
 	return len(provided) == len(api.Token) && subtle.ConstantTimeCompare([]byte(provided), []byte(api.Token)) == 1
+}
+
+func bearerToken(request *http.Request) string {
+	header := strings.TrimSpace(request.Header.Get("Authorization"))
+	if !strings.HasPrefix(header, "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
 }
 
 func (api *API) shareURL(id string) string {
