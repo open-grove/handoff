@@ -101,6 +101,25 @@ test("publish, read, render, and delete a handoff", async () => {
   assert.equal(db.records.size, 0);
 });
 
+test("long goals get a compact display title without losing the Agent goal", async () => {
+  const request = publishRequest();
+  const body = await request.json();
+  body.goal = "继续完成编辑部 0.1.12 发布：核实并安全修复团队权限，测试后重新发布";
+  const response = await route(new Request(request.url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }), { HANDOFF_DB: fakeDB() });
+  assert.equal(response.status, 201);
+  const created = await response.json();
+  assert.equal(created.handoff.title, "继续完成编辑部 0.1.12 发布");
+  assert.match(created.handoff.markdown, /^# 继续完成编辑部 0\.1\.12 发布$/m);
+  assert.match(created.handoff.markdown, /继续完成编辑部 0\.1\.12 发布：核实并安全修复团队权限，测试后重新发布/);
+  const page = renderHTML(created.handoff, body.sections);
+  assert.match(page, /<h1>继续完成编辑部 0\.1\.12 发布<\/h1>/);
+  assert.doesNotMatch(page, /<h1>[^<]*核实并安全修复/);
+});
+
 test("publishing is anonymous while server compaction requires OpenGrove login", async () => {
   const env = {
     HANDOFF_DB: fakeDB(),

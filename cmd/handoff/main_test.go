@@ -70,6 +70,22 @@ func TestFormatShareMessageSeparatesHumanAndAgentInstructions(t *testing.T) {
 	}
 }
 
+func TestFormatShareMessageUsesCompactTitle(t *testing.T) {
+	result := types.CreateResponse{
+		Handoff: types.Handoff{
+			ID:        "abcdefghijklmnopqrstuv",
+			Title:     "继续完成编辑部 0.1.12 发布",
+			Goal:      "继续完成编辑部 0.1.12 发布：核实并安全修复所有权限问题",
+			ExpiresAt: time.Now().Add(time.Hour),
+		},
+		ShareURL: "https://handoff.openmau.com/h/abcdefghijklmnopqrstuv",
+	}
+	message := formatShareMessage(result)
+	if !strings.Contains(message, "[继续完成编辑部 0.1.12 发布]") || strings.Contains(message, "核实并安全修复") {
+		t.Fatalf("share message did not use compact title:\n%s", message)
+	}
+}
+
 func TestMarkdownLinkLabelFallback(t *testing.T) {
 	if label := markdownLinkLabel(" \n\t"); label != "Handoff 交接" {
 		t.Fatalf("fallback label = %q", label)

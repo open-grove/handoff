@@ -20,7 +20,10 @@ import (
 	"github.com/yuin/goldmark/extension"
 )
 
-const maxContextChars = 180_000
+const (
+	maxContextChars = 180_000
+	maxTitleWidth   = 64
+)
 
 var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?is)-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----`),
@@ -58,6 +61,60 @@ func (AgentPlanCompactor) Generator() string { return "server:agent-plan" }
 
 func SanitizeGoal(goal string) string {
 	return strings.TrimSpace(Redact(goal))
+}
+
+// CompactTitle derives a short display heading without weakening the complete
+// operational goal stored in the Agent section. CJK and other wide runes count
+// as two columns, so headings stay compact in both Chinese and English.
+func CompactTitle(goal string) string {
+	value := strings.Join(strings.Fields(SanitizeGoal(goal)), " ")
+	if value == "" {
+		return "Handoff"
+	}
+	for _, separator := range []rune{'：', ':', '。', '！', '？', '!', '?', '；', ';'} {
+		if index := strings.IndexRune(value, separator); index > 0 {
+			prefix := strings.TrimSpace(value[:index])
+			if len([]rune(prefix)) >= 2 {
+				value = prefix
+				break
+			}
+		}
+	}
+	var output []rune
+	width := 0
+	truncated := false
+	for _, character := range []rune(value) {
+		characterWidth := titleRuneWidth(character)
+		if width+characterWidth > maxTitleWidth-1 {
+			truncated = true
+			break
+		}
+		output = append(output, character)
+		width += characterWidth
+	}
+	title := strings.TrimSpace(string(output))
+	if title == "" {
+		return "Handoff"
+	}
+	if truncated {
+		title = strings.TrimRight(title, " ,，、:：;；-—") + "…"
+	}
+	return title
+}
+
+func titleRuneWidth(value rune) int {
+	switch {
+	case value >= 0x1100 && value <= 0x115f,
+		value >= 0x2e80 && value <= 0xa4cf,
+		value >= 0xac00 && value <= 0xd7a3,
+		value >= 0xf900 && value <= 0xfaff,
+		value >= 0xfe10 && value <= 0xfe6f,
+		value >= 0xff00 && value <= 0xff60,
+		value >= 0x1f300:
+		return 2
+	default:
+		return 1
+	}
 }
 
 func SanitizeContext(input types.Context) types.Context {
@@ -140,6 +197,7 @@ func Build(ctx context.Context, compactor Compactor, id, goal string, source typ
 	handoff := types.Handoff{
 		Version: types.ProtocolVersion,
 		ID:      id,
+		Title:   CompactTitle(goal),
 		Goal:    goal,
 		Source: types.SourceRef{
 			Kind:      source.Source,
@@ -204,6 +262,7 @@ func BuildFromSections(id, goal string, source types.SourceRef, sections Section
 	handoff := types.Handoff{
 		Version:   types.ProtocolVersion,
 		ID:        id,
+		Title:     CompactTitle(goal),
 		Goal:      goal,
 		Source:    source,
 		Generator: generator,
@@ -216,6 +275,10 @@ func BuildFromSections(id, goal string, source types.SourceRef, sections Section
 
 func Render(handoff types.Handoff, sections Sections) string {
 	sections = normalizeSections(sections, handoff.Goal)
+	title := strings.TrimSpace(handoff.Title)
+	if title == "" {
+		title = CompactTitle(handoff.Goal)
+	}
 	var output strings.Builder
 	fmt.Fprintf(&output, "---\nversion: %d\nid: %s\nsource: %s\n", handoff.Version, yamlString(handoff.ID), yamlString(handoff.Source.Kind))
 	if handoff.Source.SessionID != "" {
@@ -224,8 +287,8 @@ func Render(handoff types.Handoff, sections Sections) string {
 	if handoff.Source.Cursor != "" {
 		fmt.Fprintf(&output, "source_cursor: %s\n", yamlString(handoff.Source.Cursor))
 	}
-	fmt.Fprintf(&output, "created_at: %s\nexpires_at: %s\ngenerator: %s\n---\n\n", handoff.CreatedAt.Format(time.RFC3339), handoff.ExpiresAt.Format(time.RFC3339), yamlString(handoff.Generator))
-	fmt.Fprintf(&output, "# %s\n\n", markdownTitle(handoff.Goal))
+	fmt.Fprintf(&output, "title: %s\ncreated_at: %s\nexpires_at: %s\ngenerator: %s\n---\n\n", yamlString(title), handoff.CreatedAt.Format(time.RFC3339), handoff.ExpiresAt.Format(time.RFC3339), yamlString(handoff.Generator))
+	fmt.Fprintf(&output, "# %s\n\n", markdownTitle(title))
 	output.WriteString("## For Human\n\n")
 	fmt.Fprintf(&output, "### 项目背景\n\n%s\n\n", valueOrUnknown(sections.HumanBackground))
 	fmt.Fprintf(&output, "### 当前情况\n\n%s\n\n", valueOrUnknown(sections.HumanStatus))
@@ -346,9 +409,9 @@ const openGroveSaplingSVG = `<svg viewBox="0 0 128 128" aria-hidden="true" focus
 
 func HTML(handoff types.Handoff) string {
 	displayMarkdown := withoutFrontMatter(handoff.Markdown)
-	title := strings.TrimSpace(handoff.Goal)
+	title := strings.TrimSpace(handoff.Title)
 	if title == "" {
-		title = "Handoff"
+		title = CompactTitle(handoff.Goal)
 	}
 	id := html.EscapeString(handoff.ID)
 	humanMarkdown, agentMarkdown, audienceAware := splitAudienceMarkdown(displayMarkdown)

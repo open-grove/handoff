@@ -5,6 +5,7 @@ const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const MAX_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MIN_TTL_SECONDS = 5 * 60;
 const AGENT_PLAN_MAX_TOKENS = 16384;
+const MAX_TITLE_WIDTH = 64;
 const SSE_HEARTBEAT_MS = 15_000;
 const VALID_ID = /^[A-Za-z0-9_-]{20,32}$/;
 const DEFAULT_OPENGROVE_WW_BASE_URL = "https://opengrove.creativefitting.cn";
@@ -348,6 +349,7 @@ function buildFromSections(input, ttlSeconds) {
   const handoff = {
     version: PROTOCOL_VERSION,
     id,
+    title: compactTitle(goal),
     goal,
     source,
     markdown: "",
@@ -712,12 +714,13 @@ export function renderMarkdown(handoff, sections) {
   if (handoff.source.session_id) lines.push(`source_session: ${yamlString(handoff.source.session_id)}`);
   if (handoff.source.cursor) lines.push(`source_cursor: ${yamlString(handoff.source.cursor)}`);
   lines.push(
+    `title: ${yamlString(handoff.title || compactTitle(handoff.goal))}`,
     `created_at: ${handoff.created_at}`,
     `expires_at: ${handoff.expires_at}`,
     `generator: ${yamlString(handoff.generator)}`,
     "---",
     "",
-    `# ${markdownTitle(handoff.goal)}`,
+    `# ${markdownTitle(handoff.title || compactTitle(handoff.goal))}`,
     "",
     "## For Human",
     "",
@@ -751,6 +754,7 @@ function appendMarkdownList(lines, title, values) {
 const OPENGROVE_SAPLING_SVG = `<svg viewBox="0 0 128 128" aria-hidden="true" focusable="false" shape-rendering="crispEdges"><g transform="translate(24 18) scale(0.72)"><rect x="0" y="0" width="31" height="31" fill="#7BCB57"/><rect x="16" y="16" width="31" height="31" fill="#5FB24A"/><rect x="79" y="15" width="31" height="31" fill="#7BCB57"/><rect x="63" y="31" width="31" height="31" fill="#5FB24A"/><rect x="47" y="47" width="17" height="58" fill="#202424"/><rect x="60" y="47" width="4" height="58" fill="#343A38"/><rect x="32" y="105" width="47" height="15" fill="#202424"/><rect x="32" y="105" width="47" height="3" fill="#343A38"/></g></svg>`;
 
 export function renderHTML(handoff, sections) {
+  const title = handoff.title || compactTitle(handoff.goal);
   const humanTodoItems = renderItems(sections.human_todos);
   const agentSections = [
     ["Goal", handoff.goal],
@@ -762,10 +766,10 @@ export function renderHTML(handoff, sections) {
     ["Open Questions", sections.open_questions],
   ].map(([title, value]) => `<section><h3>${escapeHTML(title)}</h3>${Array.isArray(value) ? renderItems(value) : renderText(value)}</section>`).join("");
 
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(handoff.goal)} · OpenGrove Handoff</title><style>
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)} · OpenGrove Handoff</title><style>
 :root{color-scheme:light;--bg:#f7f7f5;--paper:#fff;--ink:#252525;--muted:#74746f;--line:#e7e6e2;--accent:#635bda;--accent-soft:#eeecff;--green:#247a52;--green-soft:#e9f7ef;--shadow:0 18px 60px rgba(31,31,28,.07)}*{box-sizing:border-box}html,body{margin:0;background:var(--bg)}body{color:var(--ink);font:16px/1.7 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}.shell{width:min(900px,calc(100% - 32px));margin:auto;padding:24px 0 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:42px}.brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-size:14px;font-weight:720;text-decoration:none}.brand-mark{display:grid;place-items:center;flex:0 0 auto;width:30px;height:30px;padding:2px;border:1px solid var(--line);border-radius:9px;background:#fbfbfa}.brand-mark svg{display:block;width:100%;height:100%}.brand small{color:var(--muted);font-size:14px;font-weight:540}.raw-link{padding:6px 13px;border:1px solid var(--line);border-radius:10px;color:var(--muted);background:var(--paper);font-size:13px;font-weight:650;text-decoration:none}.hero,.content{max-width:760px;margin-left:auto;margin-right:auto}.hero{margin-bottom:22px;text-align:center}.hero h1{margin:0;font-size:clamp(1.65rem,3.5vw,2.35rem);line-height:1.22;letter-spacing:-.035em}.content{display:grid;gap:16px}.panel{border:1px solid var(--line);border-radius:20px;background:var(--paper);overflow:hidden}.human-panel{padding:30px clamp(22px,5vw,46px) 38px;box-shadow:var(--shadow)}.panel-heading{display:flex;align-items:center;gap:13px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--line)}.audience-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:var(--accent-soft);font-size:18px}.eyebrow{display:block;color:var(--accent);font-size:11px;line-height:1.35;font-weight:780;letter-spacing:.12em}.panel-heading h2{margin:3px 0 0;font-size:18px}.human-content{display:grid;grid-template-columns:1fr 1fr;gap:22px 30px}.summary-block:last-child{grid-column:1/-1;padding-top:22px;border-top:1px solid var(--line)}h3{margin:0 0 9px;font-size:14px}.human-content h3{color:var(--green)}p,ul{margin:0}ul{padding-left:1.2em}li+li{margin-top:5px}.agent-panel{background:rgba(255,255,255,.58)}.agent-panel summary{display:flex;align-items:center;justify-content:space-between;padding:21px 24px;cursor:pointer;list-style:none}.agent-panel summary::-webkit-details-marker{display:none}.summary-main{display:flex;align-items:center;gap:13px}.summary-main strong{display:block;margin-top:3px;font-size:15px}.chevron{font-size:28px;color:var(--muted);transform:rotate(90deg)}.agent-panel[open] .chevron{transform:rotate(-90deg)}.agent-body{padding:24px;border-top:1px solid var(--line)}.agent-instruction{margin:0 0 28px;padding:18px 20px;border:1px solid #dcd8ff;border-radius:14px;background:var(--accent-soft)}.agent-instruction p{margin-top:5px}.agent-instruction a{color:var(--accent);font-size:13px}.agent-content{display:grid;gap:24px}.agent-content h3{font-size:15px}.agent-content p{white-space:pre-wrap}.agent-content code,.agent-instruction code{padding:.13em .38em;border-radius:5px;background:#f0f0ed;font: .9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#171716;--paper:#232322;--ink:#f1f1ef;--muted:#a4a49f;--line:#373735;--accent:#a9a3ff;--accent-soft:#302e4b;--green:#72c99a;--green-soft:#203a2d;--shadow:0 20px 65px rgba(0,0,0,.25)}.agent-panel{background:rgba(35,35,34,.72)}.agent-content code,.agent-instruction code{background:#30302e}.agent-instruction{border-color:#48436d}}@media(max-width:640px){.shell{width:min(100% - 20px,900px);padding-top:18px}.topbar{margin-bottom:32px}.hero h1{font-size:1.75rem}.human-panel{padding:24px 20px 30px}.human-content{display:block}.summary-block{margin-top:24px}.summary-block:first-child{margin-top:0}.summary-block:last-child{padding-top:24px}.agent-panel summary{padding:18px}.agent-body{padding:18px}}
 .human-content{display:grid;grid-template-columns:1fr;gap:0}.summary-block{min-width:0;margin:0;padding:22px 0;border-top:1px solid var(--line)}.summary-block:first-child{padding-top:0;border-top:0}.summary-block:last-child{padding-bottom:0}
-</style></head><body><div class="shell"><header class="topbar"><a class="brand" href="https://github.com/open-grove/handoff" aria-label="Open OpenGrove Handoff on GitHub"><span class="brand-mark">${OPENGROVE_SAPLING_SVG}</span><div>OpenGrove <small>/ Handoff</small></div></a><a class="raw-link" href="./${escapeHTML(handoff.id)}.md">Markdown ↗</a></header><main><section class="hero"><h1>${escapeHTML(handoff.goal)}</h1></section><div class="content"><section class="panel human-panel"><div class="panel-heading"><span class="audience-icon" aria-hidden="true">🖐️</span><div><span class="eyebrow">FOR HUMAN</span><h2>先看这里</h2></div></div><div class="human-content"><section class="summary-block"><h3>项目背景</h3>${renderText(sections.human_background)}</section><section class="summary-block"><h3>当前情况</h3>${renderText(sections.human_status)}</section><section class="summary-block"><h3>待办事项</h3>${humanTodoItems}</section></div></section><details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>Agent 交接上下文</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span class="eyebrow">给 Agent 的指令</span><p>请使用 <strong>opengrove-handoff</strong> 读取内容，分享码：<code>${escapeHTML(handoff.id)}</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a></div><div class="agent-content">${agentSections}</div></div></details></div></main></div></body></html>`;
+</style></head><body><div class="shell"><header class="topbar"><a class="brand" href="https://github.com/open-grove/handoff" aria-label="Open OpenGrove Handoff on GitHub"><span class="brand-mark">${OPENGROVE_SAPLING_SVG}</span><div>OpenGrove <small>/ Handoff</small></div></a><a class="raw-link" href="./${escapeHTML(handoff.id)}.md">Markdown ↗</a></header><main><section class="hero"><h1>${escapeHTML(title)}</h1></section><div class="content"><section class="panel human-panel"><div class="panel-heading"><span class="audience-icon" aria-hidden="true">🖐️</span><div><span class="eyebrow">FOR HUMAN</span><h2>先看这里</h2></div></div><div class="human-content"><section class="summary-block"><h3>项目背景</h3>${renderText(sections.human_background)}</section><section class="summary-block"><h3>当前情况</h3>${renderText(sections.human_status)}</section><section class="summary-block"><h3>待办事项</h3>${humanTodoItems}</section></div></section><details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>Agent 交接上下文</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span class="eyebrow">给 Agent 的指令</span><p>请使用 <strong>opengrove-handoff</strong> 读取内容，分享码：<code>${escapeHTML(handoff.id)}</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a></div><div class="agent-content">${agentSections}</div></div></details></div></main></div></body></html>`;
 }
 
 function renderText(value) {
@@ -820,6 +824,32 @@ function timingSafeEqual(left, right) {
 
 function markdownTitle(value) {
   return String(value || "Handoff").trim().replace(/\s+/g, " ").replace(/[\\`*_\[\]<>#|]/g, "\\$&") || "Handoff";
+}
+
+function compactTitle(value) {
+  let title = sanitizeText(value).replace(/\s+/g, " ").trim();
+  if (!title) return "Handoff";
+  for (const separator of ["：", ":", "。", "！", "？", "!", "?", "；", ";"]) {
+    const index = title.indexOf(separator);
+    if (index > 0 && [...title.slice(0, index).trim()].length >= 2) {
+      title = title.slice(0, index).trim();
+      break;
+    }
+  }
+  let output = "";
+  let width = 0;
+  let truncated = false;
+  for (const character of title) {
+    const characterWidth = /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe6f\uff00-\uff60]|[\p{Extended_Pictographic}]/u.test(character) ? 2 : 1;
+    if (width + characterWidth > MAX_TITLE_WIDTH - 1) {
+      truncated = true;
+      break;
+    }
+    output += character;
+    width += characterWidth;
+  }
+  output = output.trim() || "Handoff";
+  return truncated ? `${output.replace(/[ ,，、:：;；\-—]+$/u, "")}…` : output;
 }
 
 function yamlString(value) {

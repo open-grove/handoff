@@ -28,6 +28,8 @@ If the provider exposes a readable native compact summary, the CLI uses that sum
 
 The generated Markdown has two audience layers. `For Human` contains a short plain-language project background, current situation, and todo list. `For Agent` preserves the operational goal, context, decisions, current state, important files, next steps, and open questions. Keep the human layer understandable without exposing unnecessary paths or implementation detail; keep the Agent layer precise enough to resume work.
 
+Keep the positional goal concise because it seeds the share-page heading: use a short task name, not a status paragraph or a list of requirements. The service independently derives a display title from the first clause and caps it at 64 visual columns; the complete goal remains available in the Agent section.
+
 After a successful user-facing create, relay the CLI's canonical share message verbatim. Do not rewrite it as a bullet list, rename the link, shorten the instruction, change the expiry, or add a substitute explanation. Prefer text output; if JSON output was necessary, return the `share_message` field exactly. Local delete-credential status is diagnostic and is not part of the share message.
 
 Use `--dry-run` to inspect the selected source, Agent, upload behavior, and TTL without calling an Agent or writing to the network:

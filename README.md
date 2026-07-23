@@ -127,6 +127,8 @@ handoff doctor
 
 `create --json` 额外返回 `share_message`。调用 Handoff 的 Agent 应原样转发这个字段，不能自行改成列表、重命名链接或改写安装提示。文本模式直接输出同一份标准分享消息。
 
+传给 `handoff create` 的目标应是短任务名，不要把进展说明和需求列表都塞进标题。服务端还会从第一个完整分句生成独立 `title`，并限制为最多 64 个视觉列（约 32 个汉字或 64 个英文字符）；完整目标仍保留在 `For Agent / Goal`，不会因页面标题变短而丢失。
+
 每次匿名发布都会生成一枚独立删除凭证。服务端只存储 SHA-256 哈希，CLI 把原始凭证写入本机权限为 `0600` 的 `ownership.json`，不会打印到分享消息或 `--json` 输出。创建者可直接运行 `handoff delete <code> --yes`；旧分享或其他人创建的分享仍需管理员凭据。
 
 `handoff update` 检测当前系统和架构，从 GitHub Release 下载对应二进制与 `SHA256SUMS`，校验后原子替换当前可执行文件。仓库为 private 时会复用 `GH_TOKEN` / `GITHUB_TOKEN` 或本机 `gh auth login`；公开后无需 GitHub 登录。

@@ -401,7 +401,11 @@ func formatShareMessage(result types.CreateResponse) string {
 	var message strings.Builder
 	message.WriteString("🖐️ **For Human**\n\n")
 	if result.ShareURL != "" {
-		fmt.Fprintf(&message, "你收到一份 Handoff，请打开[%s](%s)查看。\n", markdownLinkLabel(result.Handoff.Goal), result.ShareURL)
+		title := result.Handoff.Title
+		if strings.TrimSpace(title) == "" {
+			title = card.CompactTitle(result.Handoff.Goal)
+		}
+		fmt.Fprintf(&message, "你收到一份 Handoff，请打开[%s](%s)查看。\n", markdownLinkLabel(title), result.ShareURL)
 	} else {
 		message.WriteString("服务端未返回公开链接，请让发送方检查 Handoff 服务配置。\n")
 	}

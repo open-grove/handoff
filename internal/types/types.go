@@ -80,6 +80,7 @@ type PublishRequest struct {
 type Handoff struct {
 	Version   int       `json:"version"`
 	ID        string    `json:"id"`
+	Title     string    `json:"title,omitempty"`
 	Goal      string    `json:"goal"`
 	Source    SourceRef `json:"source"`
 	Markdown  string    `json:"markdown"`

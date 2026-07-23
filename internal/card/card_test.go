@@ -77,6 +77,31 @@ func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 	}
 }
 
+func TestCompactTitleKeepsFullGoalInAgentSection(t *testing.T) {
+	goal := "继续完成编辑部 0.1.12 发布：核实并安全修复团队权限，测试后重新发布"
+	if got := CompactTitle(goal); got != "继续完成编辑部 0.1.12 发布" {
+		t.Fatalf("compact title = %q", got)
+	}
+	longEnglish := "Continue the editorial release while preserving every verified implementation detail for the receiving agent"
+	title := CompactTitle(longEnglish)
+	if len([]rune(title)) >= len([]rune(longEnglish)) || !strings.HasSuffix(title, "…") {
+		t.Fatalf("long title was not capped: %q", title)
+	}
+	now := time.Date(2026, 7, 23, 8, 0, 0, 0, time.UTC)
+	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", goal, types.SourceRef{Kind: "codex"}, Sections{
+		Context: "Known", CurrentState: "Ready", NextSteps: []string{"Continue"},
+	}, "agent:codex", now, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handoff.Title != "继续完成编辑部 0.1.12 发布" {
+		t.Fatalf("stored title = %q", handoff.Title)
+	}
+	if !strings.Contains(handoff.Markdown, "# 继续完成编辑部 0.1.12 发布") || !strings.Contains(handoff.Markdown, goal) {
+		t.Fatalf("compact heading or complete Agent goal is missing:\n%s", handoff.Markdown)
+	}
+}
+
 func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
 	now := time.Date(2026, 7, 22, 8, 0, 0, 0, time.UTC)
 	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", "继续交接工具", types.SourceRef{Kind: "codex"}, Sections{
