@@ -55,7 +55,7 @@ func (runner Runner) Resolve(requested, sourceKind string) (string, error) {
 			return runtime, nil
 		}
 	}
-	return "", errors.New("no supported Agent CLI found (install Codex, Claude Code, or Pi, or use --mode local)")
+	return "", errors.New("no supported Agent CLI found (install Codex, Claude Code, or Pi, or use --generator deterministic)")
 }
 
 // Generate starts a fresh, ephemeral Agent invocation. It never resumes or

@@ -2,7 +2,7 @@ package skills
 
 import _ "embed"
 
-const Version = "0.8.4"
+const Version = "0.9.0"
 
 type Skill struct {
 	Name        string   `json:"name"`
@@ -23,12 +23,15 @@ type Requires struct {
 //go:embed handoff/SKILL.md
 var handoffMarkdown string
 
+//go:embed handoff/agents/openai.yaml
+var handoffOpenAIYAML string
+
 var handoff = Skill{
 	Name:        "handoff",
 	Description: "Package current Agent context into an audience-aware HANDOFF.md for another person, Agent, or session.",
 	Version:     Version,
 	Metadata: Metadata{
-		CLIHelp:  "handoff --help; handoff schema <command>",
+		CLIHelp:  "handoff --help; handoff schema <action>",
 		Requires: Requires{Bins: []string{"handoff"}},
 	},
 }
@@ -42,4 +45,11 @@ func Read(name string) (string, bool) {
 		return "", false
 	}
 	return handoffMarkdown, true
+}
+
+func OpenAIYAML(name string) (string, bool) {
+	if name != handoff.Name {
+		return "", false
+	}
+	return handoffOpenAIYAML, true
 }

@@ -418,7 +418,7 @@ func HTML(handoff types.Handoff) string {
 	var content string
 	if audienceAware {
 		content = `<section class="panel human-panel"><div class="panel-heading"><span class="audience-icon" aria-hidden="true">🖐️</span><div><span class="eyebrow">FOR HUMAN</span><h2>先看这里</h2></div></div><div class="human-content">` + renderHumanSummary(humanMarkdown) + `</div></section>` +
-			`<details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>Agent 交接上下文</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span>给 Agent 的指令</span><p>请使用 <strong>opengrove-handoff</strong> 读取内容，分享码：<code>` + id + `</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a></div><div class="prose agent-content">` + renderMarkdown(agentMarkdown) + `</div></div></details>`
+			`<details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>Agent 交接上下文</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span>给 Agent 的指令</span><p>请使用 <strong>OpenGrove Handoff</strong> 读取：<code>opengrove-handoff:` + id + `</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a></div><div class="prose agent-content">` + renderMarkdown(agentMarkdown) + `</div></div></details>`
 	} else {
 		content = `<section class="panel legacy-panel"><div class="prose">` + renderMarkdown(displayMarkdown) + `</div></section>`
 	}

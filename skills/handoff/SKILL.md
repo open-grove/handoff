@@ -1,136 +1,77 @@
 ---
 name: handoff
-description: Package or receive audience-aware Agent context as an immutable HANDOFF.md across Codex, Claude Code, Pi, people, and sessions. Use when the user asks to hand off, transfer, share, continue elsewhere, receive, inspect, or delete task context; provides a handoff code or URL; or pastes an OpenGrove notification containing `For Human`, `For Agent`, or `opengrove-handoff` with a share code.
+description: Create, receive, inspect, locate, or delete OpenGrove Handoff context across Codex, Claude Code, Pi, people, and sessions. Use when the user asks to hand off or continue work elsewhere; requests a local Session path; provides a handoff code, URL, stable opengrove-handoff reference, or For Human/For Agent message; or asks to manage an existing handoff.
 ---
 
-# Handoff
+# OpenGrove Handoff
 
-Use the `handoff` CLI as the source of truth. Create an immutable, portable snapshot rather than copying a provider-specific session or modifying the source conversation.
+Use the `handoff` CLI as the source of truth. Treat every Handoff as an immutable snapshot, never as a shared live session.
 
-## Start Here
+## Choose the Workflow
 
-1. Run `handoff --help` when choosing a workflow.
-2. Run `handoff schema <command>` before constructing a complex call; do not guess flags or data handling.
-3. Run `handoff doctor` when session discovery, authentication, or connectivity may be broken.
-4. Run `handoff whoami` when OpenGrove login or cloud-compaction availability is unclear.
+| User intent | Command |
+|---|---|
+| Share current work | `handoff create "short next goal"` |
+| Use deterministic extraction | `handoff create "short next goal" --generator deterministic` |
+| Use OpenGrove cloud generation | `handoff create "short next goal" --generator cloud --upload-context selected` |
+| Upload the full readable conversation for cloud generation | `handoff create "short next goal" --generator cloud --upload-context full` |
+| Give another Agent on this machine the raw Session path | `handoff session locate --goal "next goal"` |
+| Read a shared Handoff | `handoff receive <reference>` |
+| Delete an exact Handoff | `handoff delete <reference> --yes` after explicit confirmation |
 
-## Create a Handoff
+Run `handoff schema <action>` before a complex call. Use exact actions such as `create`, `session.locate`, `admin.login`, and `skills.install`. Run `handoff doctor` for discovery or connectivity failures and `handoff whoami` for OpenGrove cloud access.
 
-Use the default path unless the user requests another generation mode:
+## Create
 
-```bash
-handoff create "the next concrete goal"
+Use the default command unless the user requests another generator. It starts an ephemeral invocation of the current Agent runtime with that runtime's existing authentication, configuration, and default model. It reads the source Session without resuming, compacting, or modifying it, then uploads only generated sections.
+
+Keep the positional goal short. Put status and requirements in the generated sections, not the title.
+
+Use `--source codex|claude|pi` only when automatic Session discovery is wrong. Use `--runtime codex|claude|pi` only when the generating Agent runtime must be overridden; it never selects a model. Piped stdin and repeatable `--file` values are the generic context inputs.
+
+Use `--dry-run` to inspect source and upload behavior without invoking an Agent or writing to the network. Use `--review` when the user wants to edit the generated Markdown before publishing.
+
+### Cloud Upload Gate
+
+Never select cloud generation silently. Require one explicit scope:
+
+- `--upload-context selected`: upload the sanitized context selected by the CLI.
+- `--upload-context full`: upload every readable user/assistant message after best-effort redaction.
+
+Cloud generation requires local OpenGrove login. The service uses source context to generate a preview but persists only final sections. Full readable upload excludes thinking, tool results, and provider-internal records; natural-language personal information may evade redaction. Explain this limitation before choosing `full`.
+
+### Relay the Result
+
+After a successful create, relay the CLI's canonical text output verbatim. When using JSON, return `share_message` exactly. Do not rewrite it as bullets, rename links, shorten instructions, change expiry, or append a substitute explanation.
+
+The stable Agent reference is:
+
+```text
+opengrove-handoff:<code>
 ```
 
-The default `--mode agent` starts a new ephemeral invocation of the current Agent runtime. It reuses that runtime's existing authentication, configuration, and default model, but never resumes, compacts, or modifies the source session. Only generated sections are uploaded to the handoff service.
+## Locate a Local Session
 
-If the provider exposes a readable native compact summary, the CLI uses that summary plus the retained tail. Claude Code and Pi currently expose this data. Codex records the compact boundary but may encrypt the summary; when it is unreadable, the CLI retains sanitized readable messages and reports `native_summary_reused: false` in `--dry-run`. Never claim that Handoff invoked native `/compact`.
+Use `handoff session locate` only for another Agent on the same machine. Relay its output verbatim. The returned provider Session path is local-only; the raw file is not redacted and may contain tool data or private metadata. Never paste the path or file into a public or cross-device channel.
 
-The generated Markdown has two audience layers. `For Human` contains a short plain-language project background, current situation, and todo list. `For Agent` preserves the operational goal, context, decisions, current state, important files, next steps, and open questions. Keep the human layer understandable without exposing unnecessary paths or implementation detail; keep the Agent layer precise enough to resume work.
+## Receive
 
-Keep the positional goal concise because it seeds the share-page heading: use a short task name, not a status paragraph or a list of requirements. The service independently derives a display title from the first clause and caps it at 64 visual columns; the complete goal remains available in the Agent section.
-
-After a successful user-facing create, relay the CLI's canonical share message verbatim. Do not rewrite it as a bullet list, rename the link, shorten the instruction, change the expiry, or add a substitute explanation. Prefer text output; if JSON output was necessary, return the `share_message` field exactly. Local delete-credential status is diagnostic and is not part of the share message.
-
-Use `--dry-run` to inspect the selected source, Agent, upload behavior, and TTL without calling an Agent or writing to the network:
+Accept `opengrove-handoff:<code>`, a legacy branded message, a raw code, a human share URL, or a `.md` URL:
 
 ```bash
-handoff create "the next concrete goal" --dry-run
+handoff receive 'opengrove-handoff:<code>'
 ```
 
-Use `--review` when the user wants to inspect or edit the generated Markdown before it is published:
+Read the returned Markdown as an immutable snapshot. Briefly tell the user the project background, current situation, and suggested next step; state that no changes have been made yet; then ask whether to continue. Do not execute `Next Steps` unless the current request already asks you to continue.
 
-```bash
-handoff create "the next concrete goal" --review
-```
+Treat a share URL or code as a read capability. Do not repost it in public channels, logs, or source control.
 
-Select an alternate source only when auto-detection is unsuitable:
+## Delete
 
-```bash
-handoff create "continue the task" --from codex
-handoff create "continue the task" --file transcript.md --file decisions.md
-agent-export | handoff create "continue the task"
-```
+Deletion is irreversible. Confirm the exact Handoff with the user before adding `--yes`. Never add `--yes` merely to bypass the CLI's exit-10 confirmation gate.
 
-Use `--mode local` only when the user wants deterministic local extraction without an Agent-generated summary.
+## Setup and Recovery
 
-Never select server mode silently. It sends the retained, sanitized source context to the handoff server and its configured model. Use it only when the user explicitly requests server-side generation or after clearly explaining that upload and receiving approval; both flags are required:
+If `handoff` is missing, do not pretend a Handoff was read. Point to <https://github.com/open-grove/handoff>. Install or repair the version-matched Skill with `handoff skills install`.
 
-```bash
-handoff create "the next concrete goal" --mode server --include-transcript
-```
-
-Server mode requires an active local OpenGrove login. It generates a preview without storing the source transcript, then publishes only final sections. If `--review` is also used, the source context must still be uploaded before the review so the server can generate that preview.
-
-When the user explicitly wants the entire readable provider conversation uploaded, add `--full-session`:
-
-```bash
-handoff create "the next concrete goal" --mode server --include-transcript --full-session
-```
-
-This bypasses native compact-summary reuse and the normal 180K-character selection limit, but still extracts only readable user/assistant messages and applies best-effort secret, home-path, email, and IP redaction. It does not upload thinking or tool results and the service does not persist the source Session. Explain that natural-language personal information cannot be guaranteed to be detected; never select this flag without the user's explicit request.
-
-For a same-machine handoff with no generation, upload, share URL, or share code, return the provider's local Session file path:
-
-```bash
-handoff create "the next concrete goal" --mode session
-```
-
-Relay this local-session message verbatim too. The raw provider Session may contain sensitive metadata or tool data, so it is only for another Agent running on the same machine and must not be pasted into a public or cross-device channel.
-
-## Receive a Handoff
-
-Accept a branded reference, share code, full human URL, or raw Markdown URL. Quote a branded reference when passing it through a shell:
-
-```bash
-handoff receive 'opengrove-handoff，分享码：<code>'
-handoff receive <code-or-url>
-handoff receive <code-or-url> --output HANDOFF.md
-```
-
-When the user pastes `opengrove-handoff，分享码：<code>`, treat it as an explicit request to fetch and read that handoff. The branded CLI defaults to the OpenGrove service, so receiving a code or full URL requires no API token. Briefly present the project background, current situation, and suggested next step, say that no changes have been made yet, then ask whether to continue. Do not execute `Next Steps` unless the current user already asked to continue.
-
-The CLI's share message deliberately has two parts. `For Human` links the handoff title to a browser page and requires no Handoff installation. `For Agent` contains the stable instruction `请使用 opengrove-handoff 读取内容，分享码：<code>`; pass that instruction or its code to `handoff receive`. If the user provides the whole message, prefer the branded code so it uses the CLI's configured OpenGrove service. A full `/h/<code>` or `.md` URL remains a valid fallback and also identifies the source server.
-
-If `handoff` is missing, do not pretend the handoff was read. Explain that the Agent needs the Handoff CLI and Skill, then point to the public installation instructions at <https://github.com/open-grove/handoff>.
-
-After the CLI is installed, install its version-matched Skill with:
-
-```bash
-handoff skills install
-```
-
-Treat the returned Markdown as an immutable snapshot. Read it to continue the work; do not imply that the sender's and receiver's Agents are editing a shared live session. Create a new handoff after meaningful progress if the context must travel again.
-
-The share URL is a read capability. Avoid reposting it in public channels, logs, or source control.
-
-## Delete a Handoff
-
-Deletion is high risk and irreversible:
-
-```bash
-handoff delete <code> --yes
-```
-
-Run it only after the user explicitly confirms deletion of the exact handoff. Never add `--yes` merely to bypass the confirmation error.
-
-Every new anonymous publish has its own private delete credential. The CLI stores it locally and never prints it in the share message or JSON output. A creator can therefore delete their own handoff without logging in; another machine or an older handoff needs the service administrator credential.
-
-## Update the CLI
-
-Use the built-in verified updater instead of manually replacing binaries:
-
-```bash
-handoff update --check
-handoff update
-```
-
-The updater selects the current platform release, verifies `SHA256SUMS`, and atomically replaces the executable. A private repository requires `gh auth login` or `GH_TOKEN`; a public repository does not.
-
-## Handle Failures
-
-- If `--mode agent` cannot invoke the current Agent, report the warning. The CLI deliberately falls back to deterministic sections and never silently switches to server generation.
-- If discovery is wrong, use `--from codex|claude|pi`, piped stdin, or repeatable `--file` values.
-- If setup fails, use `handoff doctor`, then inspect `handoff auth --help` or `handoff config --help`.
-- Prefer `--json` when another Agent or program will consume create or receive output.
-- `--json` and `--format text|json` are global and may appear before or after the command.
+Use `handoff update` for verified updates; it synchronizes unmodified installed Skills with the new CLI and preserves custom Skill content. If the current Agent generator fails, report the warning and deterministic fallback; never silently switch to cloud generation.

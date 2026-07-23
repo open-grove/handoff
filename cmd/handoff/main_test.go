@@ -31,6 +31,10 @@ func TestParseHandoffRef(t *testing.T) {
 	if parsedID != id || server != "" {
 		t.Fatalf("parsed Agent instruction (%q, %q)", parsedID, server)
 	}
+	parsedID, server = parseHandoffRef("请读取 `opengrove-handoff:" + id + "`")
+	if parsedID != id || server != "" {
+		t.Fatalf("parsed stable Agent reference (%q, %q)", parsedID, server)
+	}
 	parsedID, server = parseHandoffRef("https://handoff.example/h/" + id + ".md")
 	if parsedID != id || server != "https://handoff.example" {
 		t.Fatalf("parsed Markdown URL (%q, %q)", parsedID, server)
@@ -60,13 +64,51 @@ func TestFormatShareMessageSeparatesHumanAndAgentInstructions(t *testing.T) {
 		"🖐️ **For Human**",
 		"你收到一份 Handoff，请打开[完成 \\[CLI\\] 部署](https://handoff.openmau.com/h/abcdefghijklmnopqrstuv)查看。",
 		"🤖 **For Agent**",
-		"请使用 opengrove-handoff 读取内容，分享码：`abcdefghijklmnopqrstuv`",
+		"请使用 OpenGrove Handoff 读取：`opengrove-handoff:abcdefghijklmnopqrstuv`",
 		"[查看安装方法](https://github.com/open-grove/handoff)",
 		"有效期：" + expiresAt.Format(time.RFC3339),
 	} {
 		if !strings.Contains(message, expected) {
 			t.Fatalf("share message missing %q:\n%s", expected, message)
 		}
+	}
+}
+
+func TestResolveCreateSelectionUsesPreferredVocabulary(t *testing.T) {
+	selection, err := resolveCreateSelection(createSelectionInput{
+		Source: "codex", Generator: "cloud", Runtime: "claude", UploadContext: "full",
+		Set: map[string]bool{"source": true, "generator": true, "runtime": true, "upload-context": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Source != "codex" || selection.Generator != "cloud" || selection.Runtime != "claude" || !selection.FullSession || selection.SessionPath || len(selection.Deprecated) != 0 {
+		t.Fatalf("unexpected preferred selection: %#v", selection)
+	}
+}
+
+func TestResolveCreateSelectionMapsLegacyVocabulary(t *testing.T) {
+	selection, err := resolveCreateSelection(createSelectionInput{
+		Source: "auto", Generator: "agent", Runtime: "auto",
+		LegacyFrom: "pi", LegacyMode: "server", LegacyAgent: "codex", LegacyIncludeTranscript: true,
+		Set: map[string]bool{"from": true, "mode": true, "agent": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Source != "pi" || selection.Generator != "cloud" || selection.Runtime != "codex" || selection.UploadContext != "selected" || len(selection.Deprecated) < 4 {
+		t.Fatalf("unexpected compatibility selection: %#v", selection)
+	}
+}
+
+func TestResolveCreateSelectionRejectsConflicts(t *testing.T) {
+	_, err := resolveCreateSelection(createSelectionInput{
+		Source: "codex", Generator: "agent", Runtime: "auto",
+		LegacyFrom: "pi",
+		Set:        map[string]bool{"source": true, "from": true},
+	})
+	if err == nil {
+		t.Fatal("expected preferred and legacy source conflict to fail")
 	}
 }
 
@@ -135,6 +177,9 @@ func TestCreateJSONIncludesCanonicalShareMessage(t *testing.T) {
 	if output["share_message"] != formatShareMessage(result) {
 		t.Fatalf("share_message = %#v", output["share_message"])
 	}
+	if output["agent_reference"] != "opengrove-handoff:abcdefghijklmnopqrstuv" {
+		t.Fatalf("agent_reference = %#v", output["agent_reference"])
+	}
 }
 
 func TestServerGenerationMustFailClosed(t *testing.T) {
@@ -168,7 +213,13 @@ func TestReviewSectionsAcceptsUnchangedDraft(t *testing.T) {
 }
 
 func TestSchemaContracts(t *testing.T) {
-	for _, command := range []string{"create", "receive", "delete", "auth", "config", "doctor", "whoami", "update", "skills", "version"} {
+	for _, command := range []string{
+		"create", "session.locate", "receive", "delete",
+		"admin.login", "admin.status", "admin.logout",
+		"config.show", "config.set-server", "doctor", "whoami", "update",
+		"skills.list", "skills.read", "skills.install", "version",
+		"auth", "config", "skills",
+	} {
 		contract, err := schemaContract(command)
 		if err != nil {
 			t.Fatalf("schemaContract(%q): %v", command, err)
@@ -180,6 +231,18 @@ func TestSchemaContracts(t *testing.T) {
 	if _, err := schemaContract("missing"); err == nil {
 		t.Fatal("expected unknown schema to fail")
 	}
+	create, _ := schemaContract("create")
+	createProperties := create["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	for _, legacy := range []string{"mode", "from", "agent", "include_transcript", "full_session", "stdin", "compact"} {
+		if _, exists := createProperties[legacy]; exists {
+			t.Fatalf("preferred create schema exposes legacy property %q", legacy)
+		}
+	}
+	receive, _ := schemaContract("receive")
+	receiveRequired := receive["outputSchema"].(map[string]any)["required"].([]string)
+	if strings.Contains(strings.Join(receiveRequired, ","), "share_message") {
+		t.Fatal("receive output schema incorrectly reused create-only fields")
+	}
 }
 
 func TestEmbeddedHandoffSkill(t *testing.T) {
@@ -188,8 +251,16 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 		t.Fatalf("unexpected embedded skills: %#v", available)
 	}
 	content, ok := skillbundle.Read("handoff")
-	if !ok || !strings.Contains(content, "name: handoff") || !strings.Contains(content, "--mode server") || !strings.Contains(content, "--full-session") || !strings.Contains(content, "--mode session") {
+	if !ok || !strings.Contains(content, "name: handoff") ||
+		!strings.Contains(content, "--generator cloud --upload-context selected") ||
+		!strings.Contains(content, "--upload-context full") ||
+		!strings.Contains(content, "handoff session locate") ||
+		strings.Contains(content, "--mode server") {
 		t.Fatalf("embedded skill is incomplete: ok=%v content=%q", ok, content)
+	}
+	metadata, ok := skillbundle.OpenAIYAML("handoff")
+	if !ok || !strings.Contains(metadata, `display_name: "OpenGrove Handoff"`) {
+		t.Fatalf("embedded Skill metadata is incomplete: ok=%v content=%q", ok, metadata)
 	}
 }
 
@@ -209,6 +280,9 @@ func TestDeleteRequiresStructuredConfirmation(t *testing.T) {
 }
 
 func TestGlobalOutputFormatCanAppearBeforeOrAfterCommand(t *testing.T) {
+	if _, format, err := extractOutputFormat([]string{"whoami"}); err != nil || format != "text" {
+		t.Fatalf("default output format = %q, %v; want text", format, err)
+	}
 	for _, input := range [][]string{
 		{"--json", "whoami"},
 		{"whoami", "--json"},
@@ -244,6 +318,11 @@ func TestInstallSkillWritesSupportedAgentLocations(t *testing.T) {
 		data, err := os.ReadFile(path)
 		if err != nil || string(data) != "skill content\n" {
 			t.Fatalf("installed Skill %s = %q, %v", path, data, err)
+		}
+		metadataPath := filepath.Join(root, directory, "skills", "handoff", "agents", "openai.yaml")
+		metadata, err := os.ReadFile(metadataPath)
+		if err != nil || !strings.Contains(string(metadata), "OpenGrove Handoff") {
+			t.Fatalf("installed Skill metadata %s = %q, %v", metadataPath, metadata, err)
 		}
 	}
 	if _, err := installSkill("handoff", "different\n", "all", false); err == nil {

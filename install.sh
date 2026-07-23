@@ -54,4 +54,9 @@ mkdir -p "$install_dir"
 chmod 0755 "$work_dir/handoff"
 mv "$work_dir/handoff" "$install_dir/handoff"
 echo "Installed handoff to $install_dir/handoff"
-echo "Run: handoff skills install"
+if "$install_dir/handoff" skills install >/dev/null 2>&1; then
+  echo "Installed the matching Handoff Skill for Codex, Claude Code, and compatible Agents"
+else
+  echo "Existing customized Skill was preserved" >&2
+  echo "To replace it intentionally: handoff skills install --force" >&2
+fi

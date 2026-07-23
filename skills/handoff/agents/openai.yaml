@@ -1,4 +1,4 @@
 interface:
-  display_name: "Handoff"
-  short_description: "Share audience-aware Agent context across people and sessions"
-  default_prompt: "Use $handoff to create or read a portable handoff for people and Agents."
+  display_name: "OpenGrove Handoff"
+  short_description: "Share Agent context across people, tools, and sessions"
+  default_prompt: "Use $handoff to create, receive, or locate a portable OpenGrove Handoff."
