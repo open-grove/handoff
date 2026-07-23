@@ -72,7 +72,7 @@ When the user pastes `opengrove-handoff，分享码：<code>`, treat it as an ex
 
 The CLI's share message deliberately has two parts. `For Human` links the handoff title to a browser page and requires no Handoff installation. `For Agent` contains the stable instruction `请使用 opengrove-handoff 读取内容，分享码：<code>`; pass that instruction or its code to `handoff receive`. If the user provides the whole message, prefer the branded code so it uses the CLI's configured OpenGrove service. A full `/h/<code>` or `.md` URL remains a valid fallback and also identifies the source server.
 
-If `handoff` is missing, do not pretend the handoff was read. Explain that the Agent needs the Handoff CLI and Skill, then point to the installation instructions at <https://github.com/open-grove/handoff>. The repository is currently private, so the installer needs OpenGrove organization access.
+If `handoff` is missing, do not pretend the handoff was read. Explain that the Agent needs the Handoff CLI and Skill, then point to the public installation instructions at <https://github.com/open-grove/handoff>.
 
 After the CLI is installed, install its version-matched Skill with:
 
