@@ -20,11 +20,13 @@ type Repository struct {
 type Context struct {
 	Source             string     `json:"source"`
 	SessionID          string     `json:"session_id,omitempty"`
+	SessionPath        string     `json:"-"`
 	Cursor             string     `json:"cursor,omitempty"`
 	CWD                string     `json:"cwd,omitempty"`
 	UpdatedAt          time.Time  `json:"updated_at,omitempty"`
 	Summary            string     `json:"summary,omitempty"`
 	NativeCompactFound bool       `json:"native_compact_found,omitempty"`
+	FullSession        bool       `json:"full_session,omitempty"`
 	Messages           []Message  `json:"messages"`
 	Repo               Repository `json:"repository,omitempty"`
 }

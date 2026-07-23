@@ -18,18 +18,35 @@ func TestSanitizeContextRedactsSecretsAndPaths(t *testing.T) {
 		CWD:    "/Users/alice/work/demo",
 		Messages: []types.Message{{
 			Role: "user",
-			Text: "api_key = \"super-secret-value\"\nAuthorization: Bearer abcdefghijklmnop\nkey：ark-1234567890-abcdefghijklmnop\nread /Users/alice/work/demo/main.go",
+			Text: "api_key = \"super-secret-value\"\nAuthorization: Bearer abcdefghijklmnop\nkey：ark-1234567890-abcdefghijklmnop\nemail alice@example.com\nhost 203.0.113.9\nread /Users/alice/work/demo/main.go",
 		}},
 	}
 	result := SanitizeContext(input)
 	text := result.Messages[0].Text
-	for _, forbidden := range []string{"super-secret-value", "abcdefghijklmnop", "ark-1234567890-abcdefghijklmnop", "/Users/alice"} {
+	for _, forbidden := range []string{"super-secret-value", "abcdefghijklmnop", "ark-1234567890-abcdefghijklmnop", "alice@example.com", "203.0.113.9", "/Users/alice"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("sanitized text contains %q: %s", forbidden, text)
 		}
 	}
-	if !strings.Contains(text, "[REDACTED]") || !strings.Contains(text, "$HOME/work/demo/main.go") {
+	if !strings.Contains(text, "[REDACTED]") || !strings.Contains(text, "[REDACTED EMAIL]") || !strings.Contains(text, "[REDACTED IP]") || !strings.Contains(text, "$HOME/work/demo/main.go") {
 		t.Fatalf("sanitized text lost expected markers: %s", text)
+	}
+}
+
+func TestSanitizeFullSessionDoesNotApplyNormalContextLimit(t *testing.T) {
+	early := "BEGIN-" + strings.Repeat("a", maxContextChars)
+	input := types.Context{
+		Source:      "codex",
+		FullSession: true,
+		Summary:     "compact summary must not replace the full conversation",
+		Messages: []types.Message{
+			{Role: "user", Text: early},
+			{Role: "assistant", Text: "END"},
+		},
+	}
+	result := SanitizeContext(input)
+	if result.Summary != "" || len(result.Messages) != 2 || !strings.HasPrefix(result.Messages[0].Text, "BEGIN-") || result.Messages[1].Text != "END" {
+		t.Fatalf("full session was summarized or truncated: summary=%q messages=%d", result.Summary, len(result.Messages))
 	}
 }
 

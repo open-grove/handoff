@@ -137,6 +137,57 @@ test("publishing is anonymous while server compaction requires OpenGrove login",
   assert.equal(authenticated.status, 200);
 });
 
+test("full session keeps all readable messages while redacting private identifiers", async () => {
+  let prompt = "";
+  const sections = JSON.stringify({
+    human_background: "A",
+    human_status: "B",
+    human_todos: ["C"],
+    context: "D",
+    decisions: [],
+    current_state: "E",
+    important_files: [],
+    next_steps: ["F"],
+    open_questions: [],
+  });
+  const env = {
+    HANDOFF_DB: fakeDB(),
+    ARK_AGENT_PLAN_API_KEY: "secret",
+    OPENGROVE_AUTH_FETCH: async () => Response.json({ data: { user_id: "user-1" } }),
+    ARK_AGENT_PLAN_FETCH: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      prompt = body.messages[0].content;
+      return Response.json({ content: [{ type: "text", text: sections }], usage: { input_tokens: 1, output_tokens: 1 } });
+    },
+  };
+  const beginning = `BEGIN alice@example.com 203.0.113.9 ${"a".repeat(180_000)}`;
+  const response = await route(new Request("https://handoff.example/v1/handoffs/compact-preview", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer valid-opengrove-token",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      goal: "continue",
+      context: {
+        source: "codex",
+        full_session: true,
+        summary: "do not use compact summary",
+        messages: [
+          { role: "user", text: beginning },
+          { role: "assistant", text: "END" },
+        ],
+      },
+    }),
+  }), env);
+  assert.equal(response.status, 200);
+  assert.match(prompt, /BEGIN/);
+  assert.match(prompt, /END/);
+  assert.doesNotMatch(prompt, /do not use compact summary/);
+  assert.doesNotMatch(prompt, /alice@example\.com|203\.0\.113\.9/);
+  assert.match(prompt, /\[REDACTED EMAIL\].*\[REDACTED IP\]/);
+});
+
 test("anonymous publishing is rate limited when the Cloudflare binding rejects it", async () => {
   const response = await route(publishRequest(), {
     HANDOFF_DB: fakeDB(),

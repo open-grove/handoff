@@ -31,6 +31,7 @@ import (
 const version = skillbundle.Version
 
 const installURL = "https://github.com/open-grove/handoff"
+const maxServerRequestBytes = 4 << 20
 
 var brandedHandoffRef = regexp.MustCompile("(?i)opengrove-handoff\\s*(?:读取内容\\s*)?[,，]?\\s*(?:分享码|code)\\s*[:：]\\s*`?([A-Za-z0-9_-]{20,32})")
 var embeddedHandoffURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+(?::[0-9]+)?/h/[A-Za-z0-9_-]{20,32}(?:\.md)?`)
@@ -74,6 +75,7 @@ Context sources:
 Generation modes:
   agent (default) reuses the current Agent's auth, config, and default model.
   local uses deterministic extraction. server requires --include-transcript.
+  session returns the matched provider Session file path for same-machine use.
   The source session is always read-only and is never compacted or resumed.
 `
 
@@ -169,7 +171,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	flags := flag.NewFlagSet("handoff create", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	from := flags.String("from", "auto", "context source: auto, codex, claude, or pi")
-	mode := flags.String("mode", "agent", "generation mode: agent, local, or server")
+	mode := flags.String("mode", "agent", "generation mode: agent, local, server, or session")
 	legacyCompact := flags.String("compact", "", "deprecated alias: current, none, or server")
 	agentName := flags.String("agent", "auto", "Agent runtime: auto, codex, claude, or pi (never selects a model)")
 	var files stringList
@@ -180,6 +182,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	dryRun := flags.Bool("dry-run", false, "inspect source and request without creating")
 	includeTranscript := flags.Bool("include-transcript", false, "authorize retained context upload in server mode (never persisted)")
+	fullSession := flags.Bool("full-session", false, "upload every readable session message after best-effort redaction; server mode only")
 	review := flags.Bool("review", false, "edit the generated Markdown before publishing")
 	output := flags.String("output", "", "also write HANDOFF.md to this path")
 	force := flags.Bool("force", false, "overwrite --output")
@@ -193,7 +196,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		goalArgument = flags.Args()[0]
 	}
 	if strings.TrimSpace(goalArgument) == "" || len(flags.Args()) > 0 {
-		return errors.New("usage: handoff create \"next goal\" [--from auto|codex|claude|pi] [--file PATH]")
+		return errors.New("usage: handoff create \"next goal\" [--from auto|codex|claude|pi] [--mode agent|local|server|session] [--file PATH]")
 	}
 	setFlags := map[string]bool{}
 	flags.Visit(func(item *flag.Flag) { setFlags[item.Name] = true })
@@ -204,25 +207,63 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	if selectedMode != "server" && *includeTranscript {
 		return errors.New("--include-transcript is only valid with --mode server")
 	}
+	if *fullSession && selectedMode != "server" {
+		return errors.New("--full-session is only valid with --mode server")
+	}
 	if selectedMode == "server" && !*includeTranscript && !*dryRun {
 		return errors.New("server mode uploads retained source context; repeat with --include-transcript after confirming this is intended")
 	}
+	if selectedMode == "session" && (len(files) > 0 || *stdin) {
+		return errors.New("session mode resolves an Agent session file and cannot be combined with --file or --stdin")
+	}
+	if selectedMode == "session" && (*review || *output != "" || *force) {
+		return errors.New("session mode only prints a local path and cannot be combined with --review, --output, or --force")
+	}
+	if *fullSession && (len(files) > 0 || *stdin) {
+		return errors.New("--full-session reads a provider Session and cannot be combined with --file or --stdin")
+	}
 	goal := card.SanitizeGoal(goalArgument)
-	readStdin, stdinReader, err := resolveStdin(*stdin, len(files) > 0)
-	if err != nil {
-		return err
+	var readStdin bool
+	var stdinReader io.Reader
+	if selectedMode != "session" {
+		readStdin, stdinReader, err = resolveStdin(*stdin, len(files) > 0)
+		if err != nil {
+			return err
+		}
+		if *fullSession && readStdin {
+			return errors.New("--full-session requires a provider Session; piped stdin is not supported")
+		}
 	}
 	contextSource, err := source.Load(source.Options{
-		Kind:      *from,
-		Files:     files,
-		ReadStdin: readStdin,
-		Stdin:     stdinReader,
-		NoGit:     *noGit,
+		Kind:        *from,
+		Files:       files,
+		ReadStdin:   readStdin,
+		Stdin:       stdinReader,
+		NoGit:       *noGit || selectedMode == "session",
+		FullSession: *fullSession,
 	})
 	if err != nil {
 		return err
 	}
+	if selectedMode == "session" {
+		return printLocalSession(goal, contextSource, outputFormat == "json" || *jsonOutput, *dryRun)
+	}
 	contextSource = card.SanitizeContext(contextSource)
+	serverRequestBytes := 0
+	if selectedMode == "server" {
+		encoded, encodeErr := json.Marshal(types.CompactRequest{Goal: goal, Context: contextSource})
+		if encodeErr != nil {
+			return encodeErr
+		}
+		serverRequestBytes = len(encoded)
+		if !*dryRun && serverRequestBytes > maxServerRequestBytes {
+			return fmt.Errorf(
+				"sanitized Session request is %.1f MiB; the server limit is %.1f MiB (use --mode session for same-machine transfer)",
+				float64(serverRequestBytes)/(1<<20),
+				float64(maxServerRequestBytes)/(1<<20),
+			)
+		}
+	}
 	if *dryRun {
 		resolvedAgent := ""
 		if selectedMode == "agent" {
@@ -241,8 +282,10 @@ func runCreate(profileName, outputFormat string, args []string) error {
 			"agent":                 resolvedAgent,
 			"native_compact_found":  contextSource.NativeCompactFound,
 			"native_summary_reused": strings.TrimSpace(contextSource.Summary) != "",
-			"uploads":               uploadDescription(selectedMode),
+			"full_session":          *fullSession,
+			"uploads":               uploadDescription(selectedMode, *fullSession),
 			"include_transcript":    *includeTranscript,
+			"request_bytes":         serverRequestBytes,
 			"review":                *review,
 			"ttl_seconds":           int64(ttl.Seconds()),
 		})
@@ -377,8 +420,14 @@ func markdownLinkLabel(value string) string {
 	return strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(value)
 }
 
-func uploadDescription(mode string) string {
+func uploadDescription(mode string, fullSession bool) string {
+	if mode == "session" {
+		return "none; prints a same-machine Session path only"
+	}
 	if mode == "server" {
+		if fullSession {
+			return "all readable session messages after best-effort redaction for preview, then generated sections for publishing"
+		}
 		return "retained source context for preview, then generated sections for publishing"
 	}
 	return "generated sections only"
@@ -386,8 +435,8 @@ func uploadDescription(mode string) string {
 
 func resolveCreateMode(mode, legacyCompact string, modeExplicit, compactExplicit bool) (string, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode != "agent" && mode != "local" && mode != "server" {
-		return "", errors.New("--mode must be agent, local, or server")
+	if mode != "agent" && mode != "local" && mode != "server" && mode != "session" {
+		return "", errors.New("--mode must be agent, local, server, or session")
 	}
 	if !compactExplicit {
 		return mode, nil
@@ -400,6 +449,40 @@ func resolveCreateMode(mode, legacyCompact string, modeExplicit, compactExplicit
 		return "", fmt.Errorf("--mode %s conflicts with deprecated --compact %s", mode, legacyCompact)
 	}
 	return legacy, nil
+}
+
+func printLocalSession(goal string, sourceContext types.Context, jsonOutput, dryRun bool) error {
+	path := strings.TrimSpace(sourceContext.SessionPath)
+	if path == "" {
+		return errors.New("the selected source does not expose a local Agent Session path")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return printJSON(map[string]any{
+			"dry_run":      dryRun,
+			"goal":         goal,
+			"mode":         "session",
+			"source":       sourceContext.Source,
+			"session_id":   sourceContext.SessionID,
+			"session_path": absolute,
+			"local_only":   true,
+			"uploaded":     false,
+		})
+	}
+	fmt.Print(formatLocalSessionMessage(goal, sourceContext.Source, absolute))
+	return nil
+}
+
+func formatLocalSessionMessage(goal, sourceKind, sessionPath string) string {
+	var message strings.Builder
+	message.WriteString("📍 **Local Session（仅限本机）**\n\n")
+	fmt.Fprintf(&message, "请让 Agent 直接读取这个 %s Session 文件：\n\n`%s`\n\n", sourceKind, sessionPath)
+	fmt.Fprintf(&message, "下一目标：%s\n\n", goal)
+	message.WriteString("该文件不会上传，也不会生成分享码；其他设备无法访问这个本机路径，请勿把原始 Session 文件发送到公开渠道。\n")
+	return message.String()
 }
 
 func reviewSections(ctx context.Context, goal string, sourceContext types.Context, sections types.Sections, generator string, ttl time.Duration) (types.Sections, error) {
@@ -901,9 +984,10 @@ func schemaContract(command string) (map[string]any, error) {
 				"properties": map[string]any{
 					"goal":               stringProperty("The next concrete goal for the receiver."),
 					"from":               map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto"},
-					"mode":               map[string]any{"type": "string", "enum": []string{"agent", "local", "server"}, "default": "agent", "description": "agent and local publish sections only; server also requires include_transcript."},
+					"mode":               map[string]any{"type": "string", "enum": []string{"agent", "local", "server", "session"}, "default": "agent", "description": "agent and local publish sections only; server requires include_transcript; session prints a same-machine provider Session path and never uploads."},
 					"agent":              map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto", "description": "Selects an Agent runtime, never a model."},
 					"include_transcript": booleanProperty("Explicitly authorize retained context upload; valid only with server mode."),
+					"full_session":       booleanProperty("With server mode, upload every readable user/assistant Session message after best-effort redaction instead of reusing compact summaries or applying the normal 180K-character limit."),
 					"review":             booleanProperty("Edit generated Markdown before publishing."),
 					"file":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable context file path."},
 					"stdin":              booleanProperty("Read context from stdin."),
@@ -923,6 +1007,8 @@ func schemaContract(command string) (map[string]any, error) {
 				"default_model_config": "inherits the current Agent runtime",
 				"native_compact":       "reuses a readable native summary plus its retained tail; never invokes native /compact",
 				"server_auth":          "requires an active local OpenGrove login; publishing does not require login",
+				"full_session":         "explicit opt-in; readable messages only, no thinking or tool results; best-effort redaction cannot guarantee removal of every natural-language identifier",
+				"session_mode":         "local-only raw provider Session path; no upload and no share code",
 			},
 		}, nil
 	case "receive":
@@ -1011,7 +1097,7 @@ func commandContract(name, description, risk string, properties map[string]any, 
 }
 
 func createOutputSchema() map[string]any {
-	return map[string]any{
+	handoffOutput := map[string]any{
 		"type": "object", "required": []string{"handoff"},
 		"properties": map[string]any{
 			"handoff": map[string]any{
@@ -1026,14 +1112,29 @@ func createOutputSchema() map[string]any {
 					"expires_at": map[string]any{"type": "string", "format": "date-time"},
 				},
 			},
-			"share_url":    map[string]any{"type": "string", "format": "uri"},
-			"markdown_url": map[string]any{"type": "string", "format": "uri"},
+			"share_url":     map[string]any{"type": "string", "format": "uri"},
+			"markdown_url":  map[string]any{"type": "string", "format": "uri"},
+			"share_message": map[string]any{"type": "string", "description": "Canonical user-facing Markdown. Agents must relay this value verbatim without rewriting."},
 			"delete_credential_saved": map[string]any{
 				"type":        "boolean",
 				"description": "True when the private per-handoff delete credential was saved locally; the credential itself is never printed.",
 			},
 		},
 	}
+	localSessionOutput := map[string]any{
+		"type":     "object",
+		"required": []string{"mode", "source", "session_path", "local_only", "uploaded"},
+		"properties": map[string]any{
+			"mode":         map[string]any{"type": "string", "const": "session"},
+			"source":       map[string]any{"type": "string", "enum": []string{"codex", "claude", "pi"}},
+			"session_id":   map[string]any{"type": "string"},
+			"session_path": map[string]any{"type": "string", "description": "Absolute same-machine provider Session path; never uploaded."},
+			"local_only":   map[string]any{"type": "boolean", "const": true},
+			"uploaded":     map[string]any{"type": "boolean", "const": false},
+			"dry_run":      map[string]any{"type": "boolean"},
+		},
+	}
+	return map[string]any{"oneOf": []any{handoffOutput, localSessionOutput}}
 }
 
 const skillsUsage = `Read Agent Skills embedded in the handoff CLI so instructions stay in sync with the binary.
@@ -1271,6 +1372,7 @@ func createCommandOutput(result types.CreateResponse, credentialSaved bool) map[
 		"handoff":                 result.Handoff,
 		"share_url":               result.ShareURL,
 		"markdown_url":            result.MarkdownURL,
+		"share_message":           formatShareMessage(result),
 		"delete_credential_saved": credentialSaved,
 	}
 }

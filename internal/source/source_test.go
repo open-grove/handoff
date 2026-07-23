@@ -53,6 +53,47 @@ func TestParseCodexUsesReadableNativeSummaryAndTail(t *testing.T) {
 	}
 }
 
+func TestFullSessionKeepsMessagesAcrossNativeCompaction(t *testing.T) {
+	codexInput := strings.Join([]string{
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"old"}]}}`,
+		`{"type":"compacted","payload":{"message":"native summary"}}`,
+		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tail"}]}}`,
+	}, "\n")
+	codex, err := parseCodex(strings.NewReader(codexInput), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if codex.Summary != "" || !codex.NativeCompactFound || len(codex.Messages) != 2 {
+		t.Fatalf("unexpected full Codex context: %#v", codex)
+	}
+
+	claudeInput := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"old"}}`,
+		`{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"native summary"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"tail"}}`,
+	}, "\n")
+	claude, err := parseClaude(strings.NewReader(claudeInput), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claude.Summary != "" || !claude.NativeCompactFound || len(claude.Messages) != 2 {
+		t.Fatalf("unexpected full Claude context: %#v", claude)
+	}
+
+	piInput := strings.Join([]string{
+		`{"type":"message","id":"old","message":{"role":"user","content":"old"}}`,
+		`{"type":"compaction","summary":"native summary"}`,
+		`{"type":"message","id":"tail","message":{"role":"assistant","content":"tail"}}`,
+	}, "\n")
+	pi, err := parsePi(strings.NewReader(piInput), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pi.Summary != "" || !pi.NativeCompactFound || len(pi.Messages) != 2 {
+		t.Fatalf("unexpected full Pi context: %#v", pi)
+	}
+}
+
 func TestParseClaudeSkipsToolResultsAndSidechains(t *testing.T) {
 	input := strings.Join([]string{
 		`{"type":"user","sessionId":"session-2","cwd":"/work/demo","timestamp":"2026-07-22T08:00:00Z","message":{"role":"user","content":"build it"}}`,
@@ -117,11 +158,11 @@ func TestAutoSelectsLatestMatchingWorkspace(t *testing.T) {
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Load(Options{Kind: "auto", Home: home, CWD: workspace, NoGit: true})
+	result, err := Load(Options{Kind: "auto", Home: home, CWD: workspace, NoGit: true, FullSession: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Source != "codex" || result.SessionID != "session-3" {
+	if result.Source != "codex" || result.SessionID != "session-3" || result.SessionPath != path || !result.FullSession {
 		t.Fatalf("unexpected source: %#v", result)
 	}
 }

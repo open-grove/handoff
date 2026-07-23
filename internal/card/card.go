@@ -36,6 +36,9 @@ var homePathPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)[A-Z]:\\Users\\[^\\\s"']+`),
 }
 
+var emailPattern = regexp.MustCompile(`(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b`)
+var ipAddressPattern = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
+
 var markdownRenderer = goldmark.New(goldmark.WithExtensions(extension.GFM))
 
 type Sections = types.Sections
@@ -71,6 +74,19 @@ func SanitizeContext(input types.Context) types.Context {
 		}
 	}
 	input.Repo.ChangedFiles = changedFiles
+
+	if input.FullSession {
+		input.Summary = ""
+		retained := make([]types.Message, 0, len(input.Messages))
+		for _, message := range input.Messages {
+			message.Text = strings.TrimSpace(Redact(message.Text))
+			if message.Text != "" {
+				retained = append(retained, message)
+			}
+		}
+		input.Messages = retained
+		return input
+	}
 
 	remaining := maxContextChars
 	if len(input.Summary) > remaining {
@@ -112,6 +128,8 @@ func Redact(input string) string {
 	for _, pattern := range homePathPatterns {
 		result = pattern.ReplaceAllStringFunc(result, func(string) string { return "$HOME" })
 	}
+	result = emailPattern.ReplaceAllString(result, "[REDACTED EMAIL]")
+	result = ipAddressPattern.ReplaceAllString(result, "[REDACTED IP]")
 	return result
 }
 

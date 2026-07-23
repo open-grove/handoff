@@ -69,7 +69,7 @@ export async function route(request, env, ctx = { waitUntil() {} }) {
       risk: "write",
       auth: "OpenGrove access token",
       required: ["goal", "context.source", "context.summary or context.messages"],
-      privacy: "explicit opt-in: sends retained source context to the server compactor; returns sections without storing a handoff",
+      privacy: "explicit opt-in: sends sanitized readable context to the server compactor; context.full_session bypasses compact-summary reuse and the normal 180K-character limit; source context is never stored",
       limits: { body_bytes: MAX_BODY_BYTES, max_ttl_seconds: MAX_TTL_SECONDS },
     });
   }
@@ -439,17 +439,20 @@ function redact(value) {
     .replace(/\bAKIA[A-Z0-9]{16}\b/g, "[REDACTED]")
     .replace(/(api[_-]?key|access[_-]?token|auth[_-]?token|secret|password|authorization)(\s*["']?\s*[:=]\s*["']?)[A-Za-z0-9._~+/=-]{8,}/gi, "$1$2[REDACTED]")
     .replace(/\/(Users|home)\/[^/\s"']+/g, "$HOME")
-    .replace(/[A-Z]:\\Users\\[^\\\s"']+/gi, "$HOME");
+    .replace(/[A-Z]:\\Users\\[^\\\s"']+/gi, "$HOME")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED EMAIL]")
+    .replace(/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/g, "[REDACTED IP]");
 }
 
 function sanitizeContext(input) {
   const source = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  const fullSession = Boolean(source.full_session);
   const repositoryInput = source.repository && typeof source.repository === "object" && !Array.isArray(source.repository)
     ? source.repository
     : {};
   const repositoryRoot = String(repositoryInput.root || "");
-  let summary = sanitizeText(source.summary);
-  let remaining = MAX_CONTEXT_CHARS;
+  let summary = fullSession ? "" : sanitizeText(source.summary);
+  let remaining = fullSession ? Number.MAX_SAFE_INTEGER : MAX_CONTEXT_CHARS;
   if (summary.length > remaining) {
     summary = summary.slice(-remaining);
     remaining = 0;
@@ -474,6 +477,7 @@ function sanitizeContext(input) {
     updated_at: source.updated_at,
     summary,
     native_compact_found: Boolean(source.native_compact_found),
+    full_session: fullSession,
     messages,
     repository: {
       root: repositoryRoot ? "$WORKSPACE" : "",

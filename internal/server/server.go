@@ -213,7 +213,7 @@ func (api *API) compactSchema(response http.ResponseWriter, _ *http.Request) {
 		"risk":     "write",
 		"auth":     "OpenGrove access token",
 		"required": []string{"goal", "context.source", "context.summary or context.messages"},
-		"privacy":  "explicit opt-in: sends retained source context to the server compactor; returns sections without storing a handoff",
+		"privacy":  "explicit opt-in: sends sanitized readable context to the server compactor; context.full_session bypasses compact-summary reuse and the normal 180K-character limit; source context is never stored",
 		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
 	})
 }

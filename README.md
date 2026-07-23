@@ -52,6 +52,14 @@ handoff create "continue" --mode local
 # 仅此模式要求本机 OpenGrove 已登录
 handoff create "continue" --mode server --include-transcript
 
+# 可选：完整上传所有可读 user/assistant 消息
+# 跳过原生 compact summary 和默认 180K 字符选择，但仍做 best-effort 脱敏
+handoff create "continue" --mode server --include-transcript --full-session
+
+# 可选：同一台机器上的 Agent 直接读取原始 Session 文件
+# 不压缩、不上传、不生成链接或分享码
+handoff create "continue" --mode session
+
 # 任何 Agent 都能用的通用入口
 some-agent-export | handoff create "continue the investigation"
 handoff create "continue" --file transcript.md --file decisions.md
@@ -117,6 +125,8 @@ handoff doctor
 
 所有命令都接受 `--json` 或 `--format text|json`，参数放在命令前后均可。写文件默认不覆盖，显式加 `--force` 才会覆盖。裸分享码默认从 OpenGrove 线上服务读取；profile、`HANDOFF_SERVER` 或完整 URL 可以覆盖服务地址。
 
+`create --json` 额外返回 `share_message`。调用 Handoff 的 Agent 应原样转发这个字段，不能自行改成列表、重命名链接或改写安装提示。文本模式直接输出同一份标准分享消息。
+
 每次匿名发布都会生成一枚独立删除凭证。服务端只存储 SHA-256 哈希，CLI 把原始凭证写入本机权限为 `0600` 的 `ownership.json`，不会打印到分享消息或 `--json` 输出。创建者可直接运行 `handoff delete <code> --yes`；旧分享或其他人创建的分享仍需管理员凭据。
 
 `handoff update` 检测当前系统和架构，从 GitHub Release 下载对应二进制与 `SHA256SUMS`，校验后原子替换当前可执行文件。仓库为 private 时会复用 `GH_TOKEN` / `GITHUB_TOKEN` 或本机 `gh auth login`；公开后无需 GitHub 登录。
@@ -137,6 +147,10 @@ handoff doctor
 - Codex：可以检测 `compacted` 边界；当前版本把 compaction 内容加密写入 Session 文件，外部 CLI 无法读取时会保留脱敏后的可读消息，不会伪装成已复用 summary。
 
 没有可读原生 summary 时，CLI 使用脱敏、限长后的 Session 文本。`handoff create ... --dry-run` 会显示 `native_compact_found` 和 `native_summary_reused`。
+
+`--full-session` 只适用于显式授权的 server mode。它重新读取 compact 前后的全部可读 user/assistant 消息，不应用默认 180K 字符上限；thinking、tool result 和 provider 内部记录仍不会上传。上传前会清除已知密钥、私钥、本机用户名路径、邮箱和 IP，但这是 best-effort 规则，无法保证识别自然语言里的全部个人信息。源 Session 只用于生成 preview，服务端仍只持久化最终 sections。超过 4 MiB 的脱敏请求会明确失败，不会静默截断。
+
+`--mode session` 是另一条完全本地的路径：CLI 只输出匹配到的 Codex / Claude / Pi 原始 Session 文件绝对路径。它不调用模型、不访问 Handoff 服务，也不产生分享码；接收 Agent 必须运行在同一台机器上。原始 Session 可能含工具数据和 provider 元数据，不应发送到公开渠道。
 
 `--mode agent` 是默认值。`--agent auto` 会优先识别正在承载命令的 Agent，其次使用 Session 来源；也可用 `--agent codex|claude|pi` 解决特殊终端环境里的识别问题。这个参数只选择运行时，始终不选择模型。旧的 `--compact current|none|server` 仅作为兼容别名保留。
 

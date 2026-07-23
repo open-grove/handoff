@@ -84,6 +84,7 @@ func TestResolveCreateMode(t *testing.T) {
 	}{
 		{mode: "agent", want: "agent"},
 		{mode: "local", modeSet: true, want: "local"},
+		{mode: "session", modeSet: true, want: "session"},
 		{mode: "agent", compact: "current", compactSet: true, want: "agent"},
 		{mode: "agent", compact: "none", compactSet: true, want: "local"},
 		{mode: "agent", compact: "server", compactSet: true, want: "server"},
@@ -95,6 +96,28 @@ func TestResolveCreateMode(t *testing.T) {
 	}
 	if _, err := resolveCreateMode("local", "server", true, true); err == nil {
 		t.Fatal("expected conflicting mode flags to fail")
+	}
+}
+
+func TestLocalSessionMessageIsExplicitlySameMachineOnly(t *testing.T) {
+	message := formatLocalSessionMessage("continue", "codex", "/tmp/session.jsonl")
+	for _, expected := range []string{"Local Session（仅限本机）", "/tmp/session.jsonl", "下一目标：continue", "不会上传", "不会生成分享码", "其他设备无法访问"} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("local Session message missing %q:\n%s", expected, message)
+		}
+	}
+}
+
+func TestCreateJSONIncludesCanonicalShareMessage(t *testing.T) {
+	result := types.CreateResponse{
+		Handoff: types.Handoff{
+			ID: "abcdefghijklmnopqrstuv", Goal: "continue", ExpiresAt: time.Now().Add(time.Hour),
+		},
+		ShareURL: "https://handoff.openmau.com/h/abcdefghijklmnopqrstuv",
+	}
+	output := createCommandOutput(result, true)
+	if output["share_message"] != formatShareMessage(result) {
+		t.Fatalf("share_message = %#v", output["share_message"])
 	}
 }
 
@@ -149,7 +172,7 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 		t.Fatalf("unexpected embedded skills: %#v", available)
 	}
 	content, ok := skillbundle.Read("handoff")
-	if !ok || !strings.Contains(content, "name: handoff") || !strings.Contains(content, "--mode server") {
+	if !ok || !strings.Contains(content, "name: handoff") || !strings.Contains(content, "--mode server") || !strings.Contains(content, "--full-session") || !strings.Contains(content, "--mode session") {
 		t.Fatalf("embedded skill is incomplete: ok=%v content=%q", ok, content)
 	}
 }

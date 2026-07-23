@@ -19,13 +19,14 @@ import (
 )
 
 type Options struct {
-	Kind      string
-	Files     []string
-	ReadStdin bool
-	Stdin     io.Reader
-	CWD       string
-	Home      string
-	NoGit     bool
+	Kind        string
+	Files       []string
+	ReadStdin   bool
+	Stdin       io.Reader
+	CWD         string
+	Home        string
+	NoGit       bool
+	FullSession bool
 }
 
 type candidate struct {
@@ -64,7 +65,7 @@ func Load(options Options) (types.Context, error) {
 				return types.Context{}, err
 			}
 		}
-		result, err = fromAgent(options.Kind, home, cwd)
+		result, err = fromAgent(options.Kind, home, cwd, options.FullSession)
 	}
 	if err != nil {
 		return types.Context{}, err
@@ -124,7 +125,7 @@ func fromFiles(paths []string, cwd string) (types.Context, error) {
 	}, nil
 }
 
-func fromAgent(kind, home, cwd string) (types.Context, error) {
+func fromAgent(kind, home, cwd string, fullSession bool) (types.Context, error) {
 	if kind == "" {
 		kind = "auto"
 	}
@@ -156,17 +157,19 @@ func fromAgent(kind, home, cwd string) (types.Context, error) {
 		var parsed types.Context
 		switch item.kind {
 		case "codex":
-			parsed, err = ParseCodex(file)
+			parsed, err = parseCodex(file, fullSession)
 		case "claude":
-			parsed, err = ParseClaude(file)
+			parsed, err = parseClaude(file, fullSession)
 		default:
-			parsed, err = ParsePi(file)
+			parsed, err = parsePi(file, fullSession)
 		}
 		file.Close()
 		if err != nil || len(parsed.Messages) == 0 || !sameWorkspace(parsed.CWD, cwd) {
 			continue
 		}
 		parsed.Source = item.kind
+		parsed.SessionPath = item.path
+		parsed.FullSession = fullSession
 		parsed.UpdatedAt = item.modTime.UTC()
 		return parsed, nil
 	}
@@ -189,6 +192,10 @@ func findCandidates(kind, root string) []candidate {
 }
 
 func ParseCodex(reader io.Reader) (types.Context, error) {
+	return parseCodex(reader, false)
+}
+
+func parseCodex(reader io.Reader, fullSession bool) (types.Context, error) {
 	var output types.Context
 	err := parseJSONLines(reader, func(line int, value map[string]any) {
 		payload := object(value["payload"])
@@ -198,6 +205,9 @@ func ParseCodex(reader io.Reader) (types.Context, error) {
 			output.SessionID = firstString(payload["id"], payload["session_id"])
 		case "compacted":
 			output.NativeCompactFound = true
+			if fullSession {
+				return
+			}
 			if summary := codexCompactSummary(payload); summary != "" {
 				output.Summary = summary
 				output.Messages = nil
@@ -220,6 +230,10 @@ func ParseCodex(reader io.Reader) (types.Context, error) {
 }
 
 func ParseClaude(reader io.Reader) (types.Context, error) {
+	return parseClaude(reader, false)
+}
+
+func parseClaude(reader io.Reader, fullSession bool) (types.Context, error) {
 	var output types.Context
 	err := parseJSONLines(reader, func(line int, value map[string]any) {
 		if cwd := stringValue(value["cwd"]); cwd != "" {
@@ -238,6 +252,10 @@ func ParseClaude(reader io.Reader) (types.Context, error) {
 		}
 		message := object(value["message"])
 		if boolValue(value["isCompactSummary"]) {
+			output.NativeCompactFound = true
+			if fullSession {
+				return
+			}
 			if summary := contentText(message["content"]); summary != "" {
 				output.Summary = summary
 				output.NativeCompactFound = true
@@ -259,6 +277,10 @@ func ParseClaude(reader io.Reader) (types.Context, error) {
 }
 
 func ParsePi(reader io.Reader) (types.Context, error) {
+	return parsePi(reader, false)
+}
+
+func parsePi(reader io.Reader, fullSession bool) (types.Context, error) {
 	var output types.Context
 	type identifiedMessage struct {
 		id      string
@@ -272,6 +294,10 @@ func ParsePi(reader io.Reader) (types.Context, error) {
 			output.SessionID = firstString(value["id"], value["sessionId"], object(value["payload"])["id"])
 		}
 		if entryType == "compaction" {
+			output.NativeCompactFound = true
+			if fullSession {
+				return
+			}
 			summary := firstString(value["summary"], object(value["payload"])["summary"])
 			if summary == "" {
 				return

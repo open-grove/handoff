@@ -28,6 +28,8 @@ If the provider exposes a readable native compact summary, the CLI uses that sum
 
 The generated Markdown has two audience layers. `For Human` contains a short plain-language project background, current situation, and todo list. `For Agent` preserves the operational goal, context, decisions, current state, important files, next steps, and open questions. Keep the human layer understandable without exposing unnecessary paths or implementation detail; keep the Agent layer precise enough to resume work.
 
+After a successful user-facing create, relay the CLI's canonical share message verbatim. Do not rewrite it as a bullet list, rename the link, shorten the instruction, change the expiry, or add a substitute explanation. Prefer text output; if JSON output was necessary, return the `share_message` field exactly. Local delete-credential status is diagnostic and is not part of the share message.
+
 Use `--dry-run` to inspect the selected source, Agent, upload behavior, and TTL without calling an Agent or writing to the network:
 
 ```bash
@@ -57,6 +59,22 @@ handoff create "the next concrete goal" --mode server --include-transcript
 ```
 
 Server mode requires an active local OpenGrove login. It generates a preview without storing the source transcript, then publishes only final sections. If `--review` is also used, the source context must still be uploaded before the review so the server can generate that preview.
+
+When the user explicitly wants the entire readable provider conversation uploaded, add `--full-session`:
+
+```bash
+handoff create "the next concrete goal" --mode server --include-transcript --full-session
+```
+
+This bypasses native compact-summary reuse and the normal 180K-character selection limit, but still extracts only readable user/assistant messages and applies best-effort secret, home-path, email, and IP redaction. It does not upload thinking or tool results and the service does not persist the source Session. Explain that natural-language personal information cannot be guaranteed to be detected; never select this flag without the user's explicit request.
+
+For a same-machine handoff with no generation, upload, share URL, or share code, return the provider's local Session file path:
+
+```bash
+handoff create "the next concrete goal" --mode session
+```
+
+Relay this local-session message verbatim too. The raw provider Session may contain sensitive metadata or tool data, so it is only for another Agent running on the same machine and must not be pasted into a public or cross-device channel.
 
 ## Receive a Handoff
 
