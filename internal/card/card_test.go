@@ -74,12 +74,12 @@ func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := HTML(handoff)
-	for _, expected := range []string{`class="panel human-panel"`, `class="panel agent-panel"`, "核心流程已经可用", "Agent 交接上下文", "abcdefghijklmnopqrstuv", "查看安装方法"} {
+	for _, expected := range []string{`class="panel human-panel"`, `class="panel agent-panel"`, `class="brand-mark"><svg viewBox="0 0 128 128"`, `fill="#5FB24A"`, "核心流程已经可用", "Agent 交接上下文", "abcdefghijklmnopqrstuv", "查看安装方法"} {
 		if !strings.Contains(page, expected) {
 			t.Fatalf("page missing %q: %s", expected, page)
 		}
 	}
-	for _, removed := range []string{"READY TO CONTINUE", "一份给人和 Agent", "来自 codex", "有效期至", "Shared with OpenGrove"} {
+	for _, removed := range []string{"READY TO CONTINUE", "一份给人和 Agent", "来自 codex", "有效期至", "Shared with OpenGrove", `class="brand-mark">OG`} {
 		if strings.Contains(page, removed) {
 			t.Fatalf("page still contains removed decoration %q: %s", removed, page)
 		}

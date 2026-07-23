@@ -74,7 +74,9 @@ test("publish, read, render, and delete a handoff", async () => {
   assert.match(page, /核心流程可用/);
   assert.match(page, /\.human-content\{display:grid;grid-template-columns:1fr;gap:0\}/);
   assert.match(page, /\.hero\{margin-bottom:22px;text-align:center\}/);
-  for (const removed of ["READY TO CONTINUE", "有效期至", "Shared with OpenGrove"]) assert.ok(!page.includes(removed));
+  assert.match(page, /class="brand-mark"><svg viewBox="0 0 128 128"/);
+  assert.match(page, /fill="#5FB24A"/);
+  for (const removed of ["READY TO CONTINUE", "有效期至", "Shared with OpenGrove", `class="brand-mark">OG`]) assert.ok(!page.includes(removed));
 
   const markdownResponse = await route(new Request(`${created.share_url}.md`), env, ctx);
   const markdown = await markdownResponse.text();
