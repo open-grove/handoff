@@ -19,13 +19,26 @@ install_dir="${HANDOFF_INSTALL_DIR:-$HOME/.local/bin}"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT INT TERM
 
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  gh release download --repo "$repository" --pattern "$asset" --pattern SHA256SUMS --dir "$work_dir"
-else
-  base_url="https://github.com/${repository}/releases/latest/download"
-  curl -fL --retry 3 -o "$work_dir/$asset" "$base_url/$asset"
-  curl -fL --retry 3 -o "$work_dir/SHA256SUMS" "$base_url/SHA256SUMS"
-fi
+download_asset() {
+  name="$1"
+  destination="$2"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    repo_token="$(gh auth token)"
+    api_url="$(gh api "repos/$repository/releases/latest" --jq ".assets[] | select(.name == \"$name\") | .url")"
+    test -n "$api_url"
+    curl -fsSL --retry 3 --connect-timeout 10 --max-time 180 \
+      -H "Authorization: Bearer $repo_token" \
+      -H "Accept: application/octet-stream" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      -o "$destination" "$api_url"
+  else
+    curl -fsSL --retry 3 --connect-timeout 10 --max-time 180 \
+      -o "$destination" "https://github.com/${repository}/releases/latest/download/$name"
+  fi
+}
+
+download_asset "$asset" "$work_dir/$asset"
+download_asset SHA256SUMS "$work_dir/SHA256SUMS"
 
 expected="$(awk -v name="$asset" '$2 == name { print $1 }' "$work_dir/SHA256SUMS")"
 test -n "$expected"
