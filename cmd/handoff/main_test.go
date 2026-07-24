@@ -76,13 +76,13 @@ func TestFormatShareMessageSeparatesHumanAndAgentInstructions(t *testing.T) {
 
 func TestResolveCreateSelectionUsesPreferredVocabulary(t *testing.T) {
 	selection, err := resolveCreateSelection(createSelectionInput{
-		Source: "codex", Generator: "cloud", Runtime: "claude", UploadContext: "full",
-		Set: map[string]bool{"source": true, "generator": true, "runtime": true, "upload-context": true},
+		Source: "codex", Generator: "cloud", Runtime: "claude", AttachContext: true,
+		Set: map[string]bool{"source": true, "generator": true, "runtime": true, "attach-context": true},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.Source != "codex" || selection.Generator != "cloud" || selection.Runtime != "claude" || !selection.FullSession || selection.SessionPath || len(selection.Deprecated) != 0 {
+	if selection.Source != "codex" || selection.Generator != "cloud" || selection.Runtime != "claude" || !selection.AttachContext || selection.SessionPath || len(selection.Deprecated) != 0 {
 		t.Fatalf("unexpected preferred selection: %#v", selection)
 	}
 }
@@ -166,6 +166,29 @@ func TestLocalSessionMessageIsExplicitlySameMachineOnly(t *testing.T) {
 	}
 }
 
+func TestFormatAttachedContextDistinguishesPortableContextFromRawSession(t *testing.T) {
+	rendered := formatAttachedContext(types.ContextResponse{
+		HandoffID: "abcdefghijklmnopqrstuv",
+		Context: types.ContextAttachment{
+			Source:        types.SourceRef{Kind: "codex"},
+			NativeSummary: "auxiliary summary",
+			Messages:      []types.Message{{Role: "user", Text: "continue"}},
+			Redaction:     types.RedactionVersion,
+		},
+	})
+	for _, expected := range []string{
+		"opengrove-handoff:abcdefghijklmnopqrstuv",
+		"Native Compact Summary (auxiliary)",
+		"### USER",
+		"continue",
+		"不是包含工具结果和内部记录的原始 Provider Session",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("attached Context missing %q:\n%s", expected, rendered)
+		}
+	}
+}
+
 func TestCreateJSONIncludesCanonicalShareMessage(t *testing.T) {
 	result := types.CreateResponse{
 		Handoff: types.Handoff{
@@ -214,7 +237,7 @@ func TestReviewSectionsAcceptsUnchangedDraft(t *testing.T) {
 
 func TestSchemaContracts(t *testing.T) {
 	for _, command := range []string{
-		"create", "session.locate", "receive", "delete",
+		"create", "session.locate", "receive", "context", "delete",
 		"admin.login", "admin.status", "admin.logout",
 		"config.show", "config.set-server", "doctor", "whoami", "update",
 		"skills.list", "skills.read", "skills.install", "version",
@@ -233,7 +256,7 @@ func TestSchemaContracts(t *testing.T) {
 	}
 	create, _ := schemaContract("create")
 	createProperties := create["inputSchema"].(map[string]any)["properties"].(map[string]any)
-	for _, legacy := range []string{"mode", "from", "agent", "include_transcript", "full_session", "stdin", "compact"} {
+	for _, legacy := range []string{"upload_context", "mode", "from", "agent", "include_transcript", "full_session", "stdin", "compact"} {
 		if _, exists := createProperties[legacy]; exists {
 			t.Fatalf("preferred create schema exposes legacy property %q", legacy)
 		}
@@ -252,9 +275,11 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 	}
 	content, ok := skillbundle.Read("handoff")
 	if !ok || !strings.Contains(content, "name: handoff") ||
-		!strings.Contains(content, "--generator cloud --upload-context selected") ||
-		!strings.Contains(content, "--upload-context full") ||
+		!strings.Contains(content, "--generator cloud") ||
+		!strings.Contains(content, "--attach-context") ||
+		!strings.Contains(content, "handoff context <reference>") ||
 		!strings.Contains(content, "handoff session locate") ||
+		strings.Contains(content, "--upload-context selected") ||
 		strings.Contains(content, "--mode server") {
 		t.Fatalf("embedded skill is incomplete: ok=%v content=%q", ok, content)
 	}

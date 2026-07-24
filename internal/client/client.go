@@ -48,6 +48,12 @@ func (client Client) Get(ctx context.Context, id string) (types.CreateResponse, 
 	return output, err
 }
 
+func (client Client) GetContext(ctx context.Context, id string) (types.ContextResponse, error) {
+	var output types.ContextResponse
+	err := client.request(ctx, http.MethodGet, "/v1/handoffs/"+id+"/context", nil, &output)
+	return output, err
+}
+
 func (client Client) Delete(ctx context.Context, id string) error {
 	return client.request(ctx, http.MethodDelete, "/v1/handoffs/"+id, nil, nil)
 }

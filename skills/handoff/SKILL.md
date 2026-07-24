@@ -13,10 +13,11 @@ Use the `handoff` CLI as the source of truth. Treat every Handoff as an immutabl
 |---|---|
 | Share current work | `handoff create "short next goal"` |
 | Use deterministic extraction | `handoff create "short next goal" --generator deterministic` |
-| Use OpenGrove cloud generation | `handoff create "short next goal" --generator cloud --upload-context selected` |
-| Upload the full readable conversation for cloud generation | `handoff create "short next goal" --generator cloud --upload-context full` |
+| Use OpenGrove cloud generation | `handoff create "short next goal" --generator cloud` |
+| Attach the complete sanitized readable Context | add `--attach-context` to any generator |
 | Give another Agent on this machine the raw Session path | `handoff session locate --goal "next goal"` |
 | Read a shared Handoff | `handoff receive <reference>` |
+| Read its optional Context attachment | `handoff context <reference>` |
 | Delete an exact Handoff | `handoff delete <reference> --yes` after explicit confirmation |
 
 Run `handoff schema <action>` before a complex call. Use exact actions such as `create`, `session.locate`, `admin.login`, and `skills.install`. Run `handoff doctor` for discovery or connectivity failures and `handoff whoami` for OpenGrove cloud access.
@@ -25,20 +26,26 @@ Run `handoff schema <action>` before a complex call. Use exact actions such as `
 
 Use the default command unless the user requests another generator. It starts an ephemeral invocation of the current Agent runtime with that runtime's existing authentication, configuration, and default model. It reads the source Session without resuming, compacting, or modifying it, then uploads only generated sections.
 
+The CLI constructs one canonical Context for every generator: all readable user/assistant messages, normalized and best-effort redacted, with thinking, tool results, provider-internal records, local Session paths, IDs, and cursors excluded. A readable provider-native compact summary is auxiliary evidence; it never replaces the canonical message history and the CLI never invokes native `/compact`.
+
 Keep the positional goal short. Put status and requirements in the generated sections, not the title.
 
 Use `--source codex|claude|pi` only when automatic Session discovery is wrong. Use `--runtime codex|claude|pi` only when the generating Agent runtime must be overridden; it never selects a model. Piped stdin and repeatable `--file` values are the generic context inputs.
 
 Use `--dry-run` to inspect source and upload behavior without invoking an Agent or writing to the network. Use `--review` when the user wants to edit the generated Markdown before publishing.
 
-### Cloud Upload Gate
+### Two Independent Choices
 
-Never select cloud generation silently. Require one explicit scope:
+Do not conflate generation with persistence:
 
-- `--upload-context selected`: upload the sanitized context selected by the CLI.
-- `--upload-context full`: upload every readable user/assistant message after best-effort redaction.
+- `--generator agent|deterministic|cloud` chooses who writes the compact sections.
+- `--attach-context` chooses whether the complete sanitized readable Context is stored beside the final Handoff.
 
-Cloud generation requires local OpenGrove login. The service uses source context to generate a preview but persists only final sections. Full readable upload excludes thinking, tool results, and provider-internal records; natural-language personal information may evade redaction. Explain this limitation before choosing `full`.
+Never select cloud generation silently. `--generator cloud` temporarily sends canonical Context to OpenGrove's server compactor and requires local OpenGrove login. The compact-preview endpoint does not store that Context; ordinary publishing remains anonymous.
+
+Never add `--attach-context` unless the user explicitly asks to include or share the complete Context. It is independent of the generator, requires no login, and persists the sanitized readable conversation for the Handoff's lifetime. Best-effort redaction cannot guarantee removal of every identifier expressed in natural language; explain that limitation before attaching it.
+
+The default agent generator may send canonical Context to the model provider already configured by the local Agent runtime, but does not send it to the OpenGrove compactor. Without `--attach-context`, the Handoff service receives only generated sections.
 
 ### Relay the Result
 
@@ -63,6 +70,8 @@ handoff receive 'opengrove-handoff:<code>'
 ```
 
 Read the returned Markdown as an immutable snapshot. Follow its final receiver instruction: explain the current background in clear, accessible language, then ask the user what to do next. Do not execute `Next Steps` unless the current request already asks you to continue.
+
+If the Handoff says an attached Context is available, use `handoff context <reference>` only when the user asks for it or the compact sections do not contain enough detail for the requested work. This returns the complete sanitized readable conversation, not the raw provider Session. Reading the Handoff summary never downloads the attachment automatically.
 
 Treat a share URL or code as a read capability. Do not repost it in public channels, logs, or source control.
 

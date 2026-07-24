@@ -43,9 +43,11 @@ const usage = `handoff — portable context for people and agents.
 AGENT QUICKSTART:
   handoff create "next goal"                 Auto-detect this workspace's latest Agent session
   agent-export | handoff create "next goal"  Create from stdin
-  handoff create "next goal" --generator cloud --upload-context selected
+  handoff create "next goal" --generator cloud
+  handoff create "next goal" --attach-context
   handoff session locate                     Return the same-machine Session path
   handoff receive opengrove-handoff:<code>   Print a received HANDOFF.md
+  handoff context opengrove-handoff:<code>   Read an attached full Context
   handoff whoami                             Show identity and cloud-generation access
   handoff schema create                      Inspect the create contract
 
@@ -56,6 +58,7 @@ Commands:
   create       Generate and publish a handoff                         Risk: write
   session      Locate a same-machine provider Session                 Risk: read
   receive      Fetch a handoff by reference, code, or URL             Risk: read
+  context      Fetch an explicitly attached full readable Context     Risk: read
   delete       Delete a handoff before it expires                     Risk: high-risk-write
   admin        Manage the optional service administrator credential  Risk: write
   config       Show or update CLI configuration                       Risk: read/write
@@ -77,7 +80,8 @@ Context sources:
 
 Generators:
   agent (default) reuses the current Agent's auth, config, and default model.
-  deterministic performs local extraction. cloud requires --upload-context.
+  deterministic performs local extraction. cloud requires OpenGrove login.
+  --attach-context independently stores the full sanitized readable context.
   The source session is always read-only and is never compacted or resumed.
 `
 
@@ -90,7 +94,7 @@ Preferred flags:
   --generator agent|deterministic|cloud   Generation strategy (default: agent)
   --source auto|codex|claude|pi           Context source (default: auto)
   --runtime auto|codex|claude|pi          Agent runtime; never selects a model
-  --upload-context selected|full          Explicit source upload scope for cloud
+  --attach-context                        Store full sanitized readable context
   --file PATH                             Context file; repeatable
   --review                                Edit generated Markdown before publish
   --dry-run                               Inspect without Agent or network write
@@ -102,8 +106,8 @@ Preferred flags:
 Risk: write
 
 Compatibility:
-  --mode, --from, --agent, --include-transcript, --full-session,
-  --stdin, and --compact remain accepted temporarily but are deprecated.
+  --upload-context, --mode, --from, --agent, --include-transcript,
+  --full-session, --stdin, and --compact remain accepted temporarily.
 `
 
 const sessionUsage = `Locate a provider Session file for same-machine use.
@@ -218,6 +222,8 @@ func run(args []string) error {
 		return runSession(*profileName, outputFormat, commandArgs)
 	case "receive":
 		return runReceive(*profileName, outputFormat, commandArgs)
+	case "context":
+		return runContext(*profileName, outputFormat, commandArgs)
 	case "get":
 		addDeprecationNotice("`handoff get` is deprecated; use `handoff receive`")
 		return runReceive(*profileName, outputFormat, commandArgs)
@@ -269,7 +275,8 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	sourceName := flags.String("source", "auto", "context source: auto, codex, claude, or pi")
 	generatorName := flags.String("generator", "agent", "generator: agent, deterministic, or cloud")
 	runtimeName := flags.String("runtime", "auto", "Agent runtime: auto, codex, claude, or pi (never selects a model)")
-	uploadContext := flags.String("upload-context", "", "cloud source upload: selected or full")
+	attachContext := flags.Bool("attach-context", false, "store full sanitized readable context beside the handoff")
+	uploadContext := flags.String("upload-context", "", "deprecated cloud upload acknowledgement: selected or full")
 	legacyFrom := flags.String("from", "auto", "deprecated alias for --source")
 	legacyMode := flags.String("mode", "agent", "deprecated generator alias: agent, local, server, or session")
 	legacyCompact := flags.String("compact", "", "deprecated alias: current, none, or server")
@@ -302,7 +309,8 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	flags.Visit(func(item *flag.Flag) { setFlags[item.Name] = true })
 	selection, err := resolveCreateSelection(createSelectionInput{
 		Source: *sourceName, Generator: *generatorName, Runtime: *runtimeName, UploadContext: *uploadContext,
-		LegacyFrom: *legacyFrom, LegacyMode: *legacyMode, LegacyCompact: *legacyCompact, LegacyAgent: *legacyAgent,
+		AttachContext: *attachContext,
+		LegacyFrom:    *legacyFrom, LegacyMode: *legacyMode, LegacyCompact: *legacyCompact, LegacyAgent: *legacyAgent,
 		LegacyIncludeTranscript: *legacyIncludeTranscript, LegacyFullSession: *legacyFullSession,
 		Set: setFlags,
 	})
@@ -312,20 +320,14 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	for _, deprecated := range selection.Deprecated {
 		addDeprecationNotice(deprecated)
 	}
-	if selection.Generator == "cloud" && selection.UploadContext == "" && !*dryRun {
-		return errors.New("cloud generation sends sanitized source context; choose --upload-context selected or --upload-context full")
-	}
 	if selection.Generator != "cloud" && selection.UploadContext != "" {
-		return errors.New("--upload-context is only valid with --generator cloud")
+		return errors.New("deprecated --upload-context is only valid with --generator cloud; use --attach-context to persist Context independently")
 	}
 	if selection.SessionPath && (len(files) > 0 || *legacyStdin) {
 		return errors.New("session mode resolves an Agent session file and cannot be combined with --file or --stdin")
 	}
 	if selection.SessionPath && (*review || *output != "" || *force) {
 		return errors.New("session mode only prints a local path and cannot be combined with --review, --output, or --force")
-	}
-	if selection.FullSession && (len(files) > 0 || *legacyStdin) {
-		return errors.New("--upload-context full reads a provider Session and cannot be combined with --file or --stdin")
 	}
 	goal := card.SanitizeGoal(goalArgument)
 	var readStdin bool
@@ -335,17 +337,13 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if selection.FullSession && readStdin {
-			return errors.New("--upload-context full requires a provider Session; piped stdin is not supported")
-		}
 	}
 	contextSource, err := source.Load(source.Options{
-		Kind:        selection.Source,
-		Files:       files,
-		ReadStdin:   readStdin,
-		Stdin:       stdinReader,
-		NoGit:       *noGit || selection.SessionPath,
-		FullSession: selection.FullSession,
+		Kind:      selection.Source,
+		Files:     files,
+		ReadStdin: readStdin,
+		Stdin:     stdinReader,
+		NoGit:     *noGit || selection.SessionPath,
 	})
 	if err != nil {
 		return err
@@ -354,6 +352,19 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		return printLocalSession(goal, contextSource, outputFormat == "json" || *jsonOutput, *dryRun)
 	}
 	contextSource = card.SanitizeContext(contextSource)
+	var contextAttachment *types.ContextAttachment
+	if selection.AttachContext {
+		attachment := card.BuildContextAttachment(contextSource)
+		contextAttachment = &attachment
+	}
+	attachmentBytes := 0
+	if contextAttachment != nil {
+		encoded, encodeErr := json.Marshal(contextAttachment)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		attachmentBytes = len(encoded)
+	}
 	serverRequestBytes := 0
 	if selection.Generator == "cloud" {
 		encoded, encodeErr := json.Marshal(types.CompactRequest{Goal: goal, Context: contextSource})
@@ -375,24 +386,24 @@ func runCreate(profileName, outputFormat string, args []string) error {
 			resolvedAgent, _ = (agentruntime.Runner{}).Resolve(selection.Runtime, contextSource.Source)
 		}
 		return printJSON(map[string]any{
-			"dry_run":               true,
-			"goal":                  goal,
-			"source":                contextSource.Source,
-			"session_id":            contextSource.SessionID,
-			"cursor":                contextSource.Cursor,
-			"messages":              len(contextSource.Messages),
-			"characters":            contextCharacters(contextSource),
-			"repository":            contextSource.Repo,
-			"generator":             selection.Generator,
-			"runtime":               resolvedAgent,
-			"native_compact_found":  contextSource.NativeCompactFound,
-			"native_summary_reused": strings.TrimSpace(contextSource.Summary) != "",
-			"full_session":          selection.FullSession,
-			"uploads":               uploadDescription(selection.Generator, selection.FullSession),
-			"upload_context":        selection.UploadContext,
-			"request_bytes":         serverRequestBytes,
-			"review":                *review,
-			"ttl_seconds":           int64(ttl.Seconds()),
+			"dry_run":                  true,
+			"goal":                     goal,
+			"source":                   contextSource.Source,
+			"session_id":               contextSource.SessionID,
+			"cursor":                   contextSource.Cursor,
+			"messages":                 len(contextSource.Messages),
+			"characters":               contextCharacters(contextSource),
+			"repository":               contextSource.Repo,
+			"generator":                selection.Generator,
+			"runtime":                  resolvedAgent,
+			"native_compact_found":     contextSource.NativeCompactFound,
+			"native_summary_auxiliary": strings.TrimSpace(contextSource.Summary) != "",
+			"attach_context":           selection.AttachContext,
+			"attachment_bytes":         attachmentBytes,
+			"uploads":                  uploadDescription(selection.Generator, selection.AttachContext),
+			"request_bytes":            serverRequestBytes,
+			"review":                   *review,
+			"ttl_seconds":              int64(ttl.Seconds()),
 		})
 	}
 	_, profile, err := loadProfile(profileName)
@@ -444,14 +455,26 @@ func runCreate(profileName, outputFormat string, args []string) error {
 			return err
 		}
 	}
-	result, err := apiClient.Publish(ctx, types.PublishRequest{
+	publishRequest := types.PublishRequest{
 		Goal: goal,
 		Source: types.SourceRef{
-			Kind: contextSource.Source, SessionID: contextSource.SessionID,
-			Cursor: contextSource.Cursor, UpdatedAt: contextSource.UpdatedAt,
+			Kind: contextSource.Source, UpdatedAt: contextSource.UpdatedAt,
 		},
-		Sections: sections, Generator: generator, TTLSeconds: int64(ttl.Seconds()),
-	})
+		Sections: sections, Generator: generator, ContextAttachment: contextAttachment,
+		TTLSeconds: int64(ttl.Seconds()),
+	}
+	publishBody, encodeErr := json.Marshal(publishRequest)
+	if encodeErr != nil {
+		return encodeErr
+	}
+	if len(publishBody) > maxServerRequestBytes {
+		return fmt.Errorf(
+			"published handoff is %.1f MiB; the server limit is %.1f MiB (omit --attach-context or reduce the source)",
+			float64(len(publishBody))/(1<<20),
+			float64(maxServerRequestBytes)/(1<<20),
+		)
+	}
+	result, err := apiClient.Publish(ctx, publishRequest)
 	if err != nil {
 		return err
 	}
@@ -529,12 +552,15 @@ func markdownLinkLabel(value string) string {
 	return strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(value)
 }
 
-func uploadDescription(generator string, fullSession bool) string {
+func uploadDescription(generator string, attachContext bool) string {
 	if generator == "cloud" {
-		if fullSession {
-			return "all readable session messages after best-effort redaction for preview, then generated sections for publishing"
+		if attachContext {
+			return "canonical sanitized readable context for transient cloud generation, then generated sections plus the explicit context attachment for publishing"
 		}
-		return "retained source context for preview, then generated sections for publishing"
+		return "canonical sanitized readable context for transient cloud generation, then generated sections only for publishing"
+	}
+	if attachContext {
+		return "generated sections plus the explicit full sanitized readable context attachment"
 	}
 	return "generated sections only"
 }
@@ -543,12 +569,13 @@ type createSelectionInput struct {
 	Source, Generator, Runtime, UploadContext          string
 	LegacyFrom, LegacyMode, LegacyCompact, LegacyAgent string
 	LegacyIncludeTranscript, LegacyFullSession         bool
+	AttachContext                                      bool
 	Set                                                map[string]bool
 }
 
 type createSelection struct {
 	Source, Generator, Runtime, UploadContext string
-	FullSession, SessionPath                  bool
+	AttachContext, SessionPath                bool
 	Deprecated                                []string
 }
 
@@ -558,6 +585,7 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 		Generator:     strings.ToLower(strings.TrimSpace(input.Generator)),
 		Runtime:       strings.ToLower(strings.TrimSpace(input.Runtime)),
 		UploadContext: strings.ToLower(strings.TrimSpace(input.UploadContext)),
+		AttachContext: input.AttachContext,
 	}
 	validRuntime := func(value string) bool {
 		return value == "auto" || value == "codex" || value == "claude" || value == "pi"
@@ -642,11 +670,11 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 	legacyUpload := ""
 	if input.LegacyIncludeTranscript {
 		legacyUpload = "selected"
-		selection.Deprecated = append(selection.Deprecated, "--include-transcript is deprecated; use --upload-context")
+		selection.Deprecated = append(selection.Deprecated, "--include-transcript is deprecated; cloud generation now implies transient sanitized Context processing")
 	}
 	if input.LegacyFullSession {
 		legacyUpload = "full"
-		selection.Deprecated = append(selection.Deprecated, "--full-session is deprecated; use --upload-context full")
+		selection.Deprecated = append(selection.Deprecated, "--full-session is deprecated; canonical Context is now always complete (use --attach-context to persist it)")
 	}
 	if legacyUpload != "" {
 		if input.Set["upload-context"] && selection.UploadContext != legacyUpload {
@@ -654,7 +682,9 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 		}
 		selection.UploadContext = legacyUpload
 	}
-	selection.FullSession = selection.UploadContext == "full"
+	if input.Set["upload-context"] {
+		selection.Deprecated = append(selection.Deprecated, "--upload-context is deprecated; cloud generation now always uses canonical Context transiently")
+	}
 	if input.Set["stdin"] {
 		selection.Deprecated = append(selection.Deprecated, "--stdin is deprecated; pipe input without the flag")
 	}
@@ -850,6 +880,92 @@ func runReceive(profileName, outputFormat string, args []string) error {
 	}
 	fmt.Print(result.Handoff.Markdown)
 	return nil
+}
+
+func runContext(profileName, outputFormat string, args []string) error {
+	idArgument, args := leadingArgument(args)
+	flags := flag.NewFlagSet("handoff context", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	flags.Usage = func() {
+		fmt.Fprint(os.Stdout, "Fetch the full sanitized readable Context explicitly attached to a Handoff.\n\nUsage:\n  handoff context <reference|code|url> [--output CONTEXT.md] [--force]\n\nRisk: read\n")
+	}
+	jsonOutput := flags.Bool("json", false, "print structured JSON")
+	output := flags.String("output", "", "write readable Context Markdown to a file")
+	force := flags.Bool("force", false, "overwrite --output")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if idArgument == "" && len(flags.Args()) == 1 {
+		idArgument = flags.Args()[0]
+	}
+	if idArgument == "" || len(flags.Args()) > 0 {
+		return errors.New("usage: handoff context <code-or-url>")
+	}
+	id, referenceServer := parseHandoffRef(idArgument)
+	if id == "" {
+		return errors.New("invalid handoff code or URL")
+	}
+	_, profile, err := loadProfile(profileName)
+	if err != nil {
+		return err
+	}
+	if referenceServer != "" {
+		profile.Server = referenceServer
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	result, err := (client.Client{Server: profile.Server}).GetContext(ctx, id)
+	if err != nil {
+		return err
+	}
+	if outputFormat == "json" || *jsonOutput {
+		return printJSON(result)
+	}
+	rendered := formatAttachedContext(result)
+	if *output != "" {
+		if err := writeOutput(*output, rendered, *force); err != nil {
+			return err
+		}
+		absolute, _ := filepath.Abs(*output)
+		fmt.Println(absolute)
+		return nil
+	}
+	fmt.Print(rendered)
+	return nil
+}
+
+func formatAttachedContext(result types.ContextResponse) string {
+	attachment := result.Context
+	var output strings.Builder
+	output.WriteString("# Attached Handoff Context\n\n")
+	fmt.Fprintf(&output, "- Handoff: `opengrove-handoff:%s`\n", result.HandoffID)
+	fmt.Fprintf(&output, "- Source: `%s`\n", attachment.Source.Kind)
+	fmt.Fprintf(&output, "- Redaction: `%s` (best effort)\n", attachment.Redaction)
+	fmt.Fprintf(&output, "- Messages: %d\n\n", len(attachment.Messages))
+	if strings.TrimSpace(attachment.NativeSummary) != "" {
+		output.WriteString("## Native Compact Summary (auxiliary)\n\n")
+		output.WriteString(attachment.NativeSummary)
+		output.WriteString("\n\n")
+	}
+	output.WriteString("## Readable Conversation\n\n")
+	for _, message := range attachment.Messages {
+		role := strings.ToUpper(strings.TrimSpace(message.Role))
+		if role == "" {
+			role = "MESSAGE"
+		}
+		fmt.Fprintf(&output, "### %s", role)
+		if !message.At.IsZero() {
+			fmt.Fprintf(&output, " · %s", message.At.Format(time.RFC3339))
+		}
+		output.WriteString("\n\n")
+		output.WriteString(message.Text)
+		output.WriteString("\n\n")
+	}
+	output.WriteString("> 这是 Handoff 附带的、经过尽力脱敏的可读 Context，不是包含工具结果和内部记录的原始 Provider Session。\n")
+	return output.String()
 }
 
 func runDelete(profileName, outputFormat string, args []string) error {
@@ -1278,7 +1394,7 @@ func runSchema(outputFormat string, args []string) error {
 		return errors.New("usage: handoff schema [action]")
 	}
 	commands := []string{
-		"create", "session.locate", "receive", "delete",
+		"create", "session.locate", "receive", "context", "delete",
 		"admin.login", "admin.status", "admin.logout",
 		"config.show", "config.set-server", "doctor", "whoami",
 		"update", "skills.list", "skills.read", "skills.install", "version",
@@ -1319,7 +1435,7 @@ func schemaContract(command string) (map[string]any, error) {
 					"source":         map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto"},
 					"generator":      map[string]any{"type": "string", "enum": []string{"agent", "deterministic", "cloud"}, "default": "agent"},
 					"runtime":        map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto", "description": "Selects an Agent runtime, never a model."},
-					"upload_context": map[string]any{"type": "string", "enum": []string{"selected", "full"}, "description": "Required explicit sanitized source-upload scope with cloud generation."},
+					"attach_context": booleanProperty("Persist the complete sanitized readable Context beside the handoff, independently of the generator."),
 					"review":         booleanProperty("Edit generated Markdown before publishing."),
 					"file":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable context file path."},
 					"no_git":         booleanProperty("Omit repository metadata."),
@@ -1334,12 +1450,14 @@ func schemaContract(command string) (map[string]any, error) {
 			"_meta": map[string]any{
 				"envelope_version": "1.0", "risk": "write", "danger": false,
 				"session":              "read-only snapshot; never compacted, resumed, or modified",
-				"default_upload":       "generated sections only",
+				"default_upload":       "generated sections only; --attach-context is the explicit persistence boundary",
 				"default_model_config": "inherits the current Agent runtime",
-				"native_compact":       "reuses a readable native summary plus its retained tail; never invokes native /compact",
+				"canonical_context":    "all readable user/assistant messages after normalization and best-effort redaction; excludes thinking and tool results",
+				"native_compact":       "a readable native compact summary is auxiliary evidence; it never replaces the canonical message history and native /compact is never invoked",
 				"cloud_auth":           "requires an active local OpenGrove login; publishing does not require login",
-				"full_upload":          "explicit opt-in; readable messages only, no thinking or tool results; best-effort redaction cannot guarantee removal of every natural-language identifier",
-				"legacy":               "--mode, --from, --agent, --include-transcript, --full-session, --stdin, and --compact are accepted temporarily but omitted from the preferred contract",
+				"cloud_processing":     "cloud generation temporarily receives canonical sanitized Context and does not persist it unless --attach-context is also set",
+				"context_attachment":   "explicit opt-in; readable messages only, no thinking or tool results; best-effort redaction cannot guarantee removal of every natural-language identifier",
+				"legacy":               "--upload-context, --mode, --from, --agent, --include-transcript, --full-session, --stdin, and --compact are accepted temporarily but omitted from the preferred contract",
 			},
 		}, nil
 	case "session.locate":
@@ -1367,6 +1485,20 @@ func schemaContract(command string) (map[string]any, error) {
 				},
 			},
 			"outputSchema": receiveOutputSchema(), "_meta": meta("read"),
+		}, nil
+	case "context":
+		return map[string]any{
+			"name": "handoff context", "description": "Fetch the complete sanitized readable Context explicitly attached to a handoff.",
+			"inputSchema": map[string]any{
+				"type": "object", "required": []string{"code_or_url"}, "additionalProperties": false,
+				"properties": map[string]any{
+					"code_or_url": stringProperty("Branded opengrove-handoff reference, share code, or human URL."),
+					"json":        booleanProperty("Print structured JSON instead of readable Markdown."),
+					"output":      stringProperty("Write readable Context Markdown to this path."),
+					"force":       booleanProperty("Allow overwriting the output file."),
+				},
+			},
+			"outputSchema": contextOutputSchema(), "_meta": meta("read"),
 		}, nil
 	case "delete":
 		return map[string]any{
@@ -1548,10 +1680,26 @@ func handoffSchema() map[string]any {
 			"goal":       map[string]any{"type": "string"},
 			"markdown":   map[string]any{"type": "string"},
 			"generator":  map[string]any{"type": "string"},
+			"context":    map[string]any{"type": "object", "description": "Present only when a full sanitized Context attachment is available."},
 			"created_at": map[string]any{"type": "string", "format": "date-time"},
 			"expires_at": map[string]any{"type": "string", "format": "date-time"},
 		},
 	}
+}
+
+func contextOutputSchema() map[string]any {
+	return objectSchema(map[string]any{
+		"handoff_id": map[string]any{"type": "string"},
+		"context": objectSchema(map[string]any{
+			"version":              map[string]any{"type": "integer"},
+			"source":               map[string]any{"type": "object"},
+			"native_summary":       map[string]any{"type": "string"},
+			"native_compact_found": map[string]any{"type": "boolean"},
+			"messages":             map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+			"repository":           map[string]any{"type": "object"},
+			"redaction":            map[string]any{"type": "string"},
+		}, "version", "source", "messages", "redaction"),
+	}, "handoff_id", "context")
 }
 
 func localSessionOutputSchema() map[string]any {

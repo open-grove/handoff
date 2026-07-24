@@ -63,6 +63,9 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	if strings.Contains(created.Handoff.Markdown, "super-secret-value") {
 		t.Fatal("secret leaked into handoff")
 	}
+	if strings.Contains(created.Handoff.Markdown, "session-1") || created.Handoff.Source.SessionID != "" {
+		t.Fatal("provider-local session identifier leaked into the public handoff")
+	}
 
 	stored, err := os.ReadFile(store.path(created.Handoff.ID))
 	if err != nil {
@@ -133,6 +136,81 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	}
 	if _, err := store.Get(created.Handoff.ID); !os.IsNotExist(err) {
 		t.Fatalf("deleted handoff still exists: %v", err)
+	}
+}
+
+func TestPublishAndFetchExplicitContextAttachment(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer((&API{Store: store, PublicURL: "https://handoff.example", DefaultTTL: time.Hour}).Handler())
+	defer server.Close()
+
+	input := types.PublishRequest{
+		Goal:      "continue",
+		Source:    types.SourceRef{Kind: "codex"},
+		Generator: "agent:codex",
+		Sections:  types.Sections{Context: "summary", CurrentState: "ready", NextSteps: []string{"ask user"}},
+		ContextAttachment: &types.ContextAttachment{
+			Version: 99,
+			Source:  types.SourceRef{Kind: "codex", SessionID: "private-session", Cursor: "line:10"},
+			Messages: []types.Message{
+				{Role: "user", Text: "read /Users/alice/work/demo"},
+				{Role: "tool", Text: "must be removed"},
+				{Role: "assistant", Text: "done"},
+			},
+			Redaction: "untrusted",
+		},
+	}
+	body, _ := json.Marshal(input)
+	response, err := http.Post(server.URL+"/v1/handoffs", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(response.Body)
+		t.Fatalf("publish status = %d: %s", response.StatusCode, data)
+	}
+	var created types.CreateResponse
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Handoff.Context == nil || !created.Handoff.Context.Available || created.Handoff.Context.MessageCount != 2 {
+		t.Fatalf("missing attachment metadata: %#v", created.Handoff.Context)
+	}
+	if !strings.Contains(created.Handoff.Markdown, "### Attached Context") || !strings.Contains(created.Handoff.Markdown, "handoff context opengrove-handoff:") {
+		t.Fatalf("attachment instructions missing:\n%s", created.Handoff.Markdown)
+	}
+
+	regular, err := http.Get(server.URL + "/v1/handoffs/" + created.Handoff.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regularBody, _ := io.ReadAll(regular.Body)
+	regular.Body.Close()
+	if strings.Contains(string(regularBody), "read $HOME") || strings.Contains(string(regularBody), "private-session") {
+		t.Fatalf("normal receive leaked attached Context: %s", regularBody)
+	}
+
+	attached, err := http.Get(server.URL + "/v1/handoffs/" + created.Handoff.ID + "/context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attached.Body.Close()
+	if attached.StatusCode != http.StatusOK {
+		t.Fatalf("context status = %d", attached.StatusCode)
+	}
+	var contextResponse types.ContextResponse
+	if err := json.NewDecoder(attached.Body).Decode(&contextResponse); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(contextResponse)
+	if contextResponse.Context.Version != types.ContextAttachmentVersion || len(contextResponse.Context.Messages) != 2 ||
+		strings.Contains(string(encoded), "private-session") || strings.Contains(string(encoded), "must be removed") ||
+		!strings.Contains(string(encoded), "$HOME/work/demo") {
+		t.Fatalf("unexpected attached Context: %s", encoded)
 	}
 }
 

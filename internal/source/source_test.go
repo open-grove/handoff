@@ -38,7 +38,7 @@ func TestParseCodexIgnoresSummaryConfiguration(t *testing.T) {
 	}
 }
 
-func TestParseCodexUsesReadableNativeSummaryAndTail(t *testing.T) {
+func TestParseCodexKeepsReadableHistoryAndNativeSummary(t *testing.T) {
 	input := strings.Join([]string{
 		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"old"}]}}`,
 		`{"type":"compacted","payload":{"message":"native summary"}}`,
@@ -48,49 +48,8 @@ func TestParseCodexUsesReadableNativeSummaryAndTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Summary != "native summary" || !result.NativeCompactFound || len(result.Messages) != 1 || result.Messages[0].Text != "tail" {
+	if result.Summary != "native summary" || !result.NativeCompactFound || len(result.Messages) != 2 || result.Messages[0].Text != "old" || result.Messages[1].Text != "tail" {
 		t.Fatalf("unexpected compacted context: %#v", result)
-	}
-}
-
-func TestFullSessionKeepsMessagesAcrossNativeCompaction(t *testing.T) {
-	codexInput := strings.Join([]string{
-		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"old"}]}}`,
-		`{"type":"compacted","payload":{"message":"native summary"}}`,
-		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tail"}]}}`,
-	}, "\n")
-	codex, err := parseCodex(strings.NewReader(codexInput), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if codex.Summary != "" || !codex.NativeCompactFound || len(codex.Messages) != 2 {
-		t.Fatalf("unexpected full Codex context: %#v", codex)
-	}
-
-	claudeInput := strings.Join([]string{
-		`{"type":"user","message":{"role":"user","content":"old"}}`,
-		`{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"native summary"}}`,
-		`{"type":"assistant","message":{"role":"assistant","content":"tail"}}`,
-	}, "\n")
-	claude, err := parseClaude(strings.NewReader(claudeInput), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if claude.Summary != "" || !claude.NativeCompactFound || len(claude.Messages) != 2 {
-		t.Fatalf("unexpected full Claude context: %#v", claude)
-	}
-
-	piInput := strings.Join([]string{
-		`{"type":"message","id":"old","message":{"role":"user","content":"old"}}`,
-		`{"type":"compaction","summary":"native summary"}`,
-		`{"type":"message","id":"tail","message":{"role":"assistant","content":"tail"}}`,
-	}, "\n")
-	pi, err := parsePi(strings.NewReader(piInput), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pi.Summary != "" || !pi.NativeCompactFound || len(pi.Messages) != 2 {
-		t.Fatalf("unexpected full Pi context: %#v", pi)
 	}
 }
 
@@ -110,7 +69,7 @@ func TestParseClaudeSkipsToolResultsAndSidechains(t *testing.T) {
 	}
 }
 
-func TestParseClaudeUsesCompactSummaryAndTail(t *testing.T) {
+func TestParseClaudeKeepsReadableHistoryAndCompactSummary(t *testing.T) {
 	input := strings.Join([]string{
 		`{"type":"user","message":{"role":"user","content":"old"}}`,
 		`{"type":"system","subtype":"compact_boundary","content":"Conversation compacted"}`,
@@ -121,12 +80,12 @@ func TestParseClaudeUsesCompactSummaryAndTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Summary != "native summary" || !result.NativeCompactFound || len(result.Messages) != 1 || result.Messages[0].Text != "tail" || result.Cursor != "tail-id" {
+	if result.Summary != "native summary" || !result.NativeCompactFound || len(result.Messages) != 2 || result.Messages[0].Text != "old" || result.Messages[1].Text != "tail" || result.Cursor != "tail-id" {
 		t.Fatalf("unexpected compacted context: %#v", result)
 	}
 }
 
-func TestParsePiUsesCompactSummaryAndKeptTail(t *testing.T) {
+func TestParsePiKeepsReadableHistoryAndCompactSummary(t *testing.T) {
 	input := strings.Join([]string{
 		`{"type":"message","id":"old","message":{"role":"user","content":"old"}}`,
 		`{"type":"message","id":"kept","message":{"role":"assistant","content":"kept"}}`,
@@ -137,7 +96,7 @@ func TestParsePiUsesCompactSummaryAndKeptTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Summary != "native summary" || !result.NativeCompactFound || len(result.Messages) != 2 || result.Messages[0].Text != "kept" || result.Messages[1].Text != "tail" {
+	if result.Summary != "native summary" || !result.NativeCompactFound || len(result.Messages) != 3 || result.Messages[0].Text != "old" || result.Messages[1].Text != "kept" || result.Messages[2].Text != "tail" {
 		t.Fatalf("unexpected compacted context: %#v", result)
 	}
 }
@@ -158,11 +117,11 @@ func TestAutoSelectsLatestMatchingWorkspace(t *testing.T) {
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Load(Options{Kind: "auto", Home: home, CWD: workspace, NoGit: true, FullSession: true})
+	result, err := Load(Options{Kind: "auto", Home: home, CWD: workspace, NoGit: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Source != "codex" || result.SessionID != "session-3" || result.SessionPath != path || !result.FullSession {
+	if result.Source != "codex" || result.SessionID != "session-3" || result.SessionPath != path || result.FullSession {
 		t.Fatalf("unexpected source: %#v", result)
 	}
 }

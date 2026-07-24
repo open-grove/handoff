@@ -6,13 +6,17 @@
 当前 Session（只读快照，不执行 /compact）
                  │
                  ▼
-       handoff 本地脱敏 + 读取原生 summary/tail
-                 │  复用当前 Agent 的登录、配置、默认模型
+    提取全部可读消息 + 规范化 + 尽力脱敏
+                 │
                  ▼
-         结构化 handoff sections
-                 │  默认只上传最终 sections
-                 ▼
-        handoffd 存储 / 分享 HANDOFF.md
+          Canonical Context
+            │           │
+            │           └── --attach-context（可选持久化）
+            ▼
+ agent / cloud / deterministic 生成结构化 sections
+            │
+            ▼
+ handoffd 存储 / 分享 HANDOFF.md（默认只存 sections）
 ```
 
 默认不需要配置模型、API key、provider 或模型地址。比如从 Codex 中调用时，CLI 会执行一次全新的 `codex exec --ephemeral`；它沿用 Codex 已有认证与默认模型，但不会 resume、compact 或改写来源 Session。Claude Code 和 Pi 使用同样的无状态子调用思路。默认 generator 是 `agent`，不是原生 `/compact`。
@@ -48,13 +52,14 @@ handoff create "continue" --review
 # 可选：不调用 Agent，使用确定性本地提取
 handoff create "continue" --generator deterministic
 
-# 可选：明确同意把 CLI 选择并脱敏后的上下文交给云端生成
-# 仅 cloud generator 要求本机 OpenGrove 已登录
-handoff create "continue" --generator cloud --upload-context selected
+# 可选：交给云端 Kimi K3 生成
+# 这会临时发送完整 Canonical Context，仅 cloud generator 要求 OpenGrove 登录
+handoff create "continue" --generator cloud
 
-# 可选：完整上传所有可读 user/assistant 消息
-# 跳过原生 compact summary 和默认 180K 字符选择，但仍做 best-effort 脱敏
-handoff create "continue" --generator cloud --upload-context full
+# 可选：把完整的、尽力脱敏后的可读 Context 附在最终 Handoff 后面
+# 它和 generator 独立；发布附件本身不要求登录
+handoff create "continue" --attach-context
+handoff create "continue" --generator cloud --attach-context
 
 # 可选：同一台机器上的 Agent 直接读取原始 Session 文件
 # 不压缩、不上传、不生成链接或分享码
@@ -71,6 +76,9 @@ handoff receive a-secure-share-code
 handoff receive https://handoff.openmau.com/h/a-secure-share-code
 handoff receive https://handoff.openmau.com/h/a-secure-share-code.md
 handoff receive a-secure-share-code --output HANDOFF.md
+
+# 只有创建时显式 --attach-context 才存在；receive 不会自动下载
+handoff context 'opengrove-handoff:a-secure-share-code'
 
 # 查看当前登录、服务地址和云端生成权限
 handoff whoami
@@ -90,6 +98,7 @@ Agent 可先查合同，不用猜参数：
 handoff schema create
 handoff schema session.locate
 handoff schema receive
+handoff schema context
 handoff schema delete
 handoff schema admin.login
 handoff skills list
@@ -108,7 +117,7 @@ handoff doctor
 - `For Human`：用人话说清项目背景、当前情况和待办事项。默认简短，不堆文件路径、Session 元数据和实现细节。
 - `For Agent`：保留 Goal、Context、Decisions、Current State、Important Files、Next Steps 和 Open Questions，并在最后明确提醒接收 Agent：先用清晰易懂的话介绍当前背景，再询问用户下一步要怎么做，不能把交接里的 Next Steps 当成执行授权。
 
-浏览器分享页会先展示 `For Human`，并把 `For Agent` 默认收起；原始 `.md` 仍可直接打开或交给 Agent 读取。旧版 CLI 发布的六个 Agent 字段仍然可以被新服务端正常接收。
+浏览器分享页会先展示 `For Human`，并把 `For Agent` 默认收起；原始 `.md` 仍可直接打开或交给 Agent 读取。使用 `--attach-context` 时，交接卡只加入可用性和读取命令，完整 Context 通过独立接口按需获取，不会塞进默认页面或 `receive` 响应。
 
 ## CLI
 
@@ -117,6 +126,7 @@ handoff doctor
 | `handoff create "goal"` | write | 只读上下文，由当前 Agent 生成，默认只上传 sections |
 | `handoff session locate` | read | 返回仅限同机使用的原始 provider Session 路径 |
 | `handoff receive <reference>` | read | 接受 `opengrove-handoff:<code>`、旧分享码、人类页面或 `.md` URL |
+| `handoff context <reference>` | read | 读取创建时显式附带的完整脱敏可读 Context |
 | `handoff delete <code> --yes` | high-risk-write | 在 TTL 到期前删除交接卡 |
 | `handoff admin login/status/logout` | write/read/write | 管理可选的服务管理员凭据；不是 OpenGrove 用户登录 |
 | `handoff config show/set-server` | read/write | 管理 profile |
@@ -145,27 +155,27 @@ handoff doctor
 - Pi：`~/.pi/agent/sessions/**/*.jsonl` 或 `~/.pi/sessions/**/*.jsonl`
 - 永久可用的通用逃生口：stdin 和 `--file`
 
-只提取 user / assistant 文本，不提取 thinking、tool result 或原生凭据。若提供者把原生 compact summary 明文写入 Session，输入会自动收敛为“最新 summary + 被保留的后续消息”：
+CLI 总是构造同一份 Canonical Context：全部可读的 user / assistant 消息，经过规范化和尽力脱敏，不提取 thinking、tool result 或 Provider 内部记录。若 Provider 把原生 compact summary 明文写入 Session，它会作为辅助信息保留，但不会替代、删除或截断可读消息：
 
-- Claude Code：读取 `isCompactSummary` 消息，并只保留其后的消息。
-- Pi：读取 compaction summary 和 `firstKeptEntryId` 对应的保留尾部。
-- Codex：可以检测 `compacted` 边界；当前版本把 compaction 内容加密写入 Session 文件，外部 CLI 无法读取时会保留脱敏后的可读消息，不会伪装成已复用 summary。
+- Claude Code：识别 `isCompactSummary` 消息，同时保留前后的可读对话。
+- Pi：识别 compaction summary，同时保留全部可读对话。
+- Codex：识别 `compacted` 边界；能读取 summary 时把它作为辅助信息，不能读取时也不伪装成已复用。
 
-没有可读原生 summary 时，CLI 使用脱敏、限长后的 Session 文本。`handoff create ... --dry-run` 会显示 `native_compact_found` 和 `native_summary_reused`。
+`handoff create ... --dry-run` 会显示消息数、字符数、`native_compact_found`、是否存在辅助 summary，以及生成阶段与发布阶段各自会发送什么。
 
-`--upload-context full` 只适用于显式选择的 cloud generator。它重新读取 compact 前后的全部可读 user/assistant 消息，不应用默认 180K 字符上限；thinking、tool result 和 provider 内部记录仍不会上传。上传前会清除已知密钥、私钥、本机用户名路径、邮箱和 IP，但这是 best-effort 规则，无法保证识别自然语言里的全部个人信息。源 Session 只用于生成 preview，服务端仍只持久化最终 sections。超过 4 MiB 的脱敏请求会明确失败，不会静默截断。
+`--attach-context` 与 generator 完全独立。它把 Canonical Context 作为单独附件持久化到 Handoff 生命周期结束；默认不开启。附件不包含 thinking、tool result、Provider 内部记录、本机 Session 路径、Session ID 或 cursor。上传前会清除已知密钥、私钥、本机用户名路径、邮箱和 IP，但这是 best-effort 规则，无法保证识别自然语言里的全部个人信息。超过 4 MiB 的发布请求会明确失败，不会静默截断。Cloudflare 部署把小型交接卡放在 D1 主表，把可选完整 Context 拆成远低于 D1 单行限制的私有分块，并只经 Worker 的 capability URL 重组读取。
 
 `handoff session locate` 是另一条完全本地的路径：CLI 只输出匹配到的 Codex / Claude / Pi 原始 Session 文件绝对路径。它不调用模型、不访问 Handoff 服务，也不产生分享码；接收 Agent 必须运行在同一台机器上。原始 Session 可能含工具数据和 provider 元数据，不应发送到公开渠道。
 
-`--generator agent` 是默认值。`--runtime auto` 会优先识别正在承载命令的 Agent，其次使用 Session 来源；也可用 `--runtime codex|claude|pi` 解决特殊终端环境里的识别问题。这个参数只选择运行时，始终不选择模型。旧的 `--mode`、`--from`、`--agent`、`--include-transcript`、`--full-session`、`--stdin` 和 `--compact` 暂时作为兼容别名保留，但不会出现在首选 schema 中。
+`--generator agent` 是默认值。`--runtime auto` 会优先识别正在承载命令的 Agent，其次使用 Session 来源；也可用 `--runtime codex|claude|pi` 解决特殊终端环境里的识别问题。这个参数只选择运行时，始终不选择模型。旧的 `--upload-context`、`--mode`、`--from`、`--agent`、`--include-transcript`、`--full-session`、`--stdin` 和 `--compact` 暂时只做兼容解析，不再出现在首选 schema 中；旧 `selected/full` 都不会隐式创建 Context 附件。
 
 ## 隐私与故障降级
 
 - CLI 在调用当前 Agent 前先脱敏：API key、Bearer token、密码、私钥块会被替换；服务端会再次清理最终 sections。
 - `Important Files` 只保留仓库相对路径；本机绝对路径和仓库外文件会被移除。
-- 默认 `agent` 和 `deterministic` generator 下，handoffd 只收到最终 sections，完整 Session 不会发给 handoffd；服务端只持久化最终交接卡。
+- 默认 `agent` 和 `deterministic` generator 下，handoffd 只收到最终 sections；只有显式 `--attach-context` 才会额外收到并持久化 Canonical Context。
 - `agent` generator 由本机当前 Agent CLI 发起。如果该 Agent 使用云模型，脱敏后的上下文仍会发送给它已配置的模型服务商，但不会另发给 handoffd 的模型。
-- `cloud` generator 必须显式提供 `--upload-context selected|full`。handoffd 会用脱敏后的上下文生成 preview，但不存储原文；最终仍只持久化用户确认后的交接卡。
+- `cloud` generator 会把 Canonical Context 临时交给 handoffd 的模型生成 preview；该生成接口不存储原文。是否持久化仍只由独立的 `--attach-context` 决定。
 - `cloud` generator 要求本机 OpenGrove 已登录；CLI 只读取短期 access token，服务端会向 OpenGrove 账户服务校验。普通发布和接收无需登录。
 - `--review` 会在发布前打开 `$VISUAL` / `$EDITOR` 中的 Markdown；保存关闭后才上传最终 sections。服务端模式为了生成 preview，原文上传发生在 review 之前。
 - 分享 ID 是 128-bit 随机 capability，默认 7 天过期，可以提前删除。
@@ -184,7 +194,7 @@ set -a; . ./.env; set +a
 go run ./cmd/handoffd
 ```
 
-默认 generator 无需配置火山方舟。只有团队明确使用 `--generator cloud --upload-context selected|full` 时，才需要为 handoffd 配置 [方舟 Agent Plan](https://www.volcengine.com/docs/82379/2373738?lang=zh)：
+默认 generator 无需配置火山方舟。只有团队明确使用 `--generator cloud` 时，才需要为 handoffd 配置 [方舟 Agent Plan](https://www.volcengine.com/docs/82379/2373738?lang=zh)：
 
 ```dotenv
 ARK_AGENT_PLAN_BASE_URL=https://ark.cn-beijing.volces.com/api/plan
@@ -203,6 +213,7 @@ POST   /v1/handoffs        无需登录
 POST   /v1/handoffs/compact-preview Authorization: Bearer <OpenGrove access token>  只生成 sections，不存储
 POST   /v1/handoffs/compact Authorization: Bearer <OpenGrove access token>  兼容旧客户端：生成并发布
 GET    /v1/handoffs/:id
+GET    /v1/handoffs/:id/context  仅在创建时显式附带 Context 才存在
 DELETE /v1/handoffs/:id    X-Handoff-Delete-Token: <per-handoff token>；管理员也可用 Authorization
 GET    /h/:id              Markdown 渲染的人类页面
 GET    /h/:id.md           原始 HANDOFF.md

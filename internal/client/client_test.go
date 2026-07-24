@@ -38,6 +38,31 @@ func TestDeleteUsesPerHandoffCredentialHeader(t *testing.T) {
 	}
 }
 
+func TestGetContextUsesSeparateEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/v1/handoffs/abcdefghijklmnopqrstuv/context" {
+			t.Fatalf("unexpected context request: %s %s", request.Method, request.URL.Path)
+		}
+		_ = json.NewEncoder(response).Encode(types.ContextResponse{
+			HandoffID: "abcdefghijklmnopqrstuv",
+			Context: types.ContextAttachment{
+				Version:   types.ContextAttachmentVersion,
+				Source:    types.SourceRef{Kind: "codex"},
+				Messages:  []types.Message{{Role: "user", Text: "known"}},
+				Redaction: types.RedactionVersion,
+			},
+		})
+	}))
+	defer server.Close()
+	result, err := (Client{Server: server.URL, HTTP: server.Client()}).GetContext(context.Background(), "abcdefghijklmnopqrstuv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HandoffID != "abcdefghijklmnopqrstuv" || len(result.Context.Messages) != 1 {
+		t.Fatalf("unexpected Context response: %#v", result)
+	}
+}
+
 func TestPreviewServerCompactionConsumesEventStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if !strings.Contains(request.Header.Get("Accept"), "text/event-stream") {

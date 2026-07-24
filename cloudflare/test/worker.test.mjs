@@ -5,8 +5,14 @@ import worker, { readAgentPlanText, renderHTML, route } from "../src/index.mjs";
 
 function fakeDB() {
   const records = new Map();
+  const contextChunks = new Map();
   return {
     records,
+    contextChunks,
+    async batch(statements) {
+      for (const statement of statements) await statement.run();
+      return statements.map(() => ({ success: true }));
+    },
     prepare(sql) {
       let values = [];
       return {
@@ -15,8 +21,16 @@ function fakeDB() {
           return this;
         },
         async run() {
-          if (sql.startsWith("INSERT")) records.set(values[0], { payload: values[1], expires_at: values[2], delete_token_hash: values[3] });
-          if (sql.startsWith("DELETE") && sql.includes("WHERE id")) records.delete(values[0]);
+          if (sql.startsWith("INSERT INTO handoffs")) {
+            records.set(values[0], { payload: values[1], expires_at: values[2], delete_token_hash: values[3] });
+          }
+          if (sql.startsWith("INSERT INTO handoff_context_chunks")) {
+            contextChunks.set(`${values[0]}:${values[1]}`, { handoff_id: values[0], chunk_index: values[1], payload: values[2] });
+          }
+          if (sql.startsWith("DELETE FROM handoffs") && sql.includes("WHERE id")) records.delete(values[0]);
+          if (sql.startsWith("DELETE FROM handoff_context_chunks") && sql.includes("WHERE handoff_id = ?")) {
+            for (const [key, row] of contextChunks) if (row.handoff_id === values[0]) contextChunks.delete(key);
+          }
           if (sql.startsWith("DELETE") && sql.includes("expires_at")) {
             for (const [id, row] of records) if (row.expires_at <= values[0]) records.delete(id);
           }
@@ -24,6 +38,17 @@ function fakeDB() {
         },
         async first() {
           return records.get(values[0]) || null;
+        },
+        async all() {
+          if (sql.startsWith("SELECT payload FROM handoff_context_chunks")) {
+            return {
+              results: [...contextChunks.values()]
+                .filter((row) => row.handoff_id === values[0])
+                .sort((left, right) => left.chunk_index - right.chunk_index)
+                .map((row) => ({ payload: row.payload })),
+            };
+          }
+          return { results: [] };
         },
       };
     },
@@ -156,7 +181,7 @@ test("publishing is anonymous while server compaction requires OpenGrove login",
   assert.equal(authenticated.status, 200);
 });
 
-test("full session keeps all readable messages while redacting private identifiers", async () => {
+test("cloud generation receives complete canonical readable context while redacting private identifiers", async () => {
   let prompt = "";
   const sections = JSON.stringify({
     human_background: "A",
@@ -190,8 +215,7 @@ test("full session keeps all readable messages while redacting private identifie
       goal: "continue",
       context: {
         source: "codex",
-        full_session: true,
-        summary: "do not use compact summary",
+        summary: "auxiliary native compact summary",
         messages: [
           { role: "user", text: beginning },
           { role: "assistant", text: "END" },
@@ -202,9 +226,69 @@ test("full session keeps all readable messages while redacting private identifie
   assert.equal(response.status, 200);
   assert.match(prompt, /BEGIN/);
   assert.match(prompt, /END/);
-  assert.doesNotMatch(prompt, /do not use compact summary/);
+  assert.match(prompt, /auxiliary native compact summary/);
   assert.doesNotMatch(prompt, /alice@example\.com|203\.0\.113\.9/);
   assert.match(prompt, /\[REDACTED EMAIL\].*\[REDACTED IP\]/);
+});
+
+test("an attached Context is persisted explicitly and fetched separately", async () => {
+  const db = fakeDB();
+  const env = { HANDOFF_DB: db };
+  const request = publishRequest();
+  const body = await request.json();
+  body.context_attachment = {
+    version: 999,
+    source: {
+      kind: "codex",
+      session_id: "must-not-persist",
+      cursor: "line:100",
+      updated_at: "2026-07-24T00:00:00Z",
+    },
+    native_summary: "summary with alice@example.com",
+    messages: [
+      { role: "user", text: `private detail at /Users/alice/work/demo ${"x".repeat(600_000)}` },
+      { role: "tool", text: "tool result must not persist" },
+      { role: "assistant", text: "done" },
+    ],
+    repository: {
+      root: "/Users/alice/work/demo",
+      branch: "main",
+      changed_files: ["README.md"],
+    },
+  };
+  const createdResponse = await route(new Request(request.url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }), env);
+  assert.equal(createdResponse.status, 201);
+  const created = await createdResponse.json();
+  assert.equal(created.handoff.context.available, true);
+  assert.equal(created.handoff.context.message_count, 2);
+  assert.match(created.handoff.markdown, /### Attached Context/);
+  assert.match(created.handoff.markdown, /handoff context opengrove-handoff:/);
+
+  const regular = await route(new Request(`https://handoff.example/v1/handoffs/${created.handoff.id}`), env);
+  const regularText = await regular.text();
+  assert.doesNotMatch(regularText, /private detail|must-not-persist|line:100/);
+
+  const attached = await route(new Request(`https://handoff.example/v1/handoffs/${created.handoff.id}/context`), env);
+  assert.equal(attached.status, 200);
+  const context = await attached.json();
+  assert.equal(context.handoff_id, created.handoff.id);
+  assert.equal(context.context.version, 1);
+  assert.equal(context.context.redaction, "best-effort-v1");
+  assert.equal(context.context.messages.length, 2);
+  assert.match(context.context.messages[0].text, /\$HOME\/work\/demo/);
+  assert.doesNotMatch(JSON.stringify(context), /must-not-persist|line:100|alice@example\.com|tool result/);
+  assert.ok(db.contextChunks.size >= 3);
+
+  const deleted = await route(new Request(`https://handoff.example/v1/handoffs/${created.handoff.id}`, {
+    method: "DELETE",
+    headers: { "X-Handoff-Delete-Token": created.delete_token },
+  }), env);
+  assert.equal(deleted.status, 204);
+  assert.equal(db.contextChunks.size, 0);
 });
 
 test("anonymous publishing is rate limited when the Cloudflare binding rejects it", async () => {

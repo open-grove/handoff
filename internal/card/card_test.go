@@ -33,8 +33,8 @@ func TestSanitizeContextRedactsSecretsAndPaths(t *testing.T) {
 	}
 }
 
-func TestSanitizeFullSessionDoesNotApplyNormalContextLimit(t *testing.T) {
-	early := "BEGIN-" + strings.Repeat("a", maxContextChars)
+func TestSanitizeContextKeepsCompleteReadableHistoryAndAuxiliarySummary(t *testing.T) {
+	early := "BEGIN-" + strings.Repeat("a", 200_000)
 	input := types.Context{
 		Source:      "codex",
 		FullSession: true,
@@ -45,8 +45,30 @@ func TestSanitizeFullSessionDoesNotApplyNormalContextLimit(t *testing.T) {
 		},
 	}
 	result := SanitizeContext(input)
-	if result.Summary != "" || len(result.Messages) != 2 || !strings.HasPrefix(result.Messages[0].Text, "BEGIN-") || result.Messages[1].Text != "END" {
-		t.Fatalf("full session was summarized or truncated: summary=%q messages=%d", result.Summary, len(result.Messages))
+	if result.Summary != input.Summary || result.FullSession || len(result.Messages) != 2 || result.Messages[0].Text != early || result.Messages[1].Text != "END" {
+		t.Fatalf("canonical context was summarized or truncated: summary=%q messages=%d", result.Summary, len(result.Messages))
+	}
+}
+
+func TestContextAttachmentOmitsProviderLocalIdentifiers(t *testing.T) {
+	attachment := BuildContextAttachment(types.Context{
+		Source: "codex", SessionID: "private-session", Cursor: "line:20",
+		CWD: "/Users/alice/work/demo", Summary: "native summary",
+		NativeCompactFound: true,
+		Messages:           []types.Message{{Role: "user", Text: "continue"}},
+		Repo:               types.Repository{Root: "/Users/alice/work/demo", Branch: "main", ChangedFiles: []string{"README.md"}},
+	})
+	encoded, err := json.Marshal(attachment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"private-session", "line:20", "/Users/alice", `"root"`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("attachment leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if attachment.Version != types.ContextAttachmentVersion || attachment.Redaction != types.RedactionVersion || len(attachment.Messages) != 1 {
+		t.Fatalf("unexpected attachment: %#v", attachment)
 	}
 }
 
@@ -69,7 +91,7 @@ func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 			t.Fatalf("handoff missing %s", heading)
 		}
 	}
-	if !strings.Contains(handoff.Markdown, "version: 3") || !strings.Contains(handoff.Markdown, "continue the CLI") {
+	if !strings.Contains(handoff.Markdown, "version: 4") || !strings.Contains(handoff.Markdown, "continue the CLI") {
 		t.Fatalf("unexpected handoff:\n%s", handoff.Markdown)
 	}
 	receiverInstruction := "> 这是一份被传递的 Handoff。请先用清晰易懂的话向用户简单介绍当前背景，然后询问用户下一步要怎么做。\n"

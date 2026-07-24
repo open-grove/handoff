@@ -34,7 +34,8 @@ type Store struct {
 
 type storedHandoff struct {
 	types.Handoff
-	DeleteTokenHash string `json:"delete_token_hash,omitempty"`
+	Context         *types.ContextAttachment `json:"context_attachment,omitempty"`
+	DeleteTokenHash string                   `json:"delete_token_hash,omitempty"`
 }
 
 type API struct {
@@ -63,10 +64,17 @@ func (store *Store) Save(handoff types.Handoff) error {
 }
 
 func (store *Store) SaveOwned(handoff types.Handoff, deleteTokenHash string) error {
+	return store.SaveOwnedWithContext(handoff, nil, deleteTokenHash)
+}
+
+func (store *Store) SaveOwnedWithContext(handoff types.Handoff, contextAttachment *types.ContextAttachment, deleteTokenHash string) error {
 	if !validID.MatchString(handoff.ID) {
 		return errors.New("invalid handoff id")
 	}
-	data, err := json.Marshal(storedHandoff{Handoff: handoff, DeleteTokenHash: strings.TrimSpace(deleteTokenHash)})
+	data, err := json.Marshal(storedHandoff{
+		Handoff: handoff, Context: contextAttachment,
+		DeleteTokenHash: strings.TrimSpace(deleteTokenHash),
+	})
 	if err != nil {
 		return err
 	}
@@ -112,6 +120,30 @@ func (store *Store) Get(id string) (types.Handoff, error) {
 		return types.Handoff{}, os.ErrNotExist
 	}
 	return handoff, nil
+}
+
+func (store *Store) GetContext(id string) (types.ContextAttachment, error) {
+	if !validID.MatchString(id) {
+		return types.ContextAttachment{}, os.ErrNotExist
+	}
+	store.mu.RLock()
+	data, err := os.ReadFile(store.path(id))
+	store.mu.RUnlock()
+	if err != nil {
+		return types.ContextAttachment{}, err
+	}
+	var stored storedHandoff
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return types.ContextAttachment{}, err
+	}
+	if time.Now().After(stored.ExpiresAt) {
+		_ = store.Delete(id)
+		return types.ContextAttachment{}, os.ErrNotExist
+	}
+	if stored.Context == nil {
+		return types.ContextAttachment{}, os.ErrNotExist
+	}
+	return *stored.Context, nil
 }
 
 func (store *Store) Delete(id string) error {
@@ -179,6 +211,7 @@ func (api *API) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/handoffs", api.publish)
 	mux.HandleFunc("POST /v1/handoffs/compact", api.compact)
 	mux.HandleFunc("POST /v1/handoffs/compact-preview", api.compactPreview)
+	mux.HandleFunc("GET /v1/handoffs/{id}/context", api.getContext)
 	mux.HandleFunc("GET /v1/handoffs/{id}", api.get)
 	mux.HandleFunc("DELETE /v1/handoffs/{id}", api.delete)
 	mux.HandleFunc("GET /h/{id}", api.page)
@@ -201,7 +234,8 @@ func (api *API) createSchema(response http.ResponseWriter, _ *http.Request) {
 		"risk":     "write",
 		"auth":     "none",
 		"required": []string{"goal", "source.kind", "sections", "generator"},
-		"privacy":  "accepts generated sections only; no source transcript",
+		"optional": []string{"context_attachment"},
+		"privacy":  "publishing is anonymous; context_attachment is persisted only when explicitly supplied and is re-sanitized by the service",
 		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
 	})
 }
@@ -213,7 +247,7 @@ func (api *API) compactSchema(response http.ResponseWriter, _ *http.Request) {
 		"risk":     "write",
 		"auth":     "OpenGrove access token",
 		"required": []string{"goal", "context.source", "context.summary or context.messages"},
-		"privacy":  "explicit opt-in: sends sanitized readable context to the server compactor; context.full_session bypasses compact-summary reuse and the normal 180K-character limit; source context is never stored",
+		"privacy":  "cloud generation temporarily processes canonical sanitized readable context; it is not stored by this endpoint",
 		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
 	})
 }
@@ -247,7 +281,18 @@ func (api *API) publish(response http.ResponseWriter, request *http.Request) {
 		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: err.Error()})
 		return
 	}
-	api.saveCreated(response, handoff)
+	var contextAttachment *types.ContextAttachment
+	if input.ContextAttachment != nil {
+		sanitized, sanitizeErr := card.SanitizeContextAttachment(*input.ContextAttachment)
+		if sanitizeErr != nil {
+			writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: sanitizeErr.Error()})
+			return
+		}
+		contextAttachment = &sanitized
+		handoff.Context = card.ContextMetadata(sanitized)
+		handoff.Markdown = card.Render(handoff, input.Sections)
+	}
+	api.saveCreated(response, handoff, contextAttachment)
 }
 
 func (api *API) compact(response http.ResponseWriter, request *http.Request) {
@@ -287,7 +332,7 @@ func (api *API) compact(response http.ResponseWriter, request *http.Request) {
 	if compactError != nil {
 		api.logger().Warn("model generation unavailable; using deterministic handoff", "error", compactError)
 	}
-	api.saveCreated(response, handoff)
+	api.saveCreated(response, handoff, nil)
 }
 
 func (api *API) compactPreview(response http.ResponseWriter, request *http.Request) {
@@ -329,14 +374,14 @@ func hasContext(input types.Context) bool {
 	return strings.TrimSpace(input.Summary) != "" || len(input.Messages) > 0
 }
 
-func (api *API) saveCreated(response http.ResponseWriter, handoff types.Handoff) {
+func (api *API) saveCreated(response http.ResponseWriter, handoff types.Handoff, contextAttachment *types.ContextAttachment) {
 	deleteToken, deleteTokenHash, err := newDeleteCredential()
 	if err != nil {
 		api.logger().Error("allocate delete credential", "error", err)
 		writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not create handoff ownership"})
 		return
 	}
-	if err := api.Store.SaveOwned(handoff, deleteTokenHash); err != nil {
+	if err := api.Store.SaveOwnedWithContext(handoff, contextAttachment, deleteTokenHash); err != nil {
 		api.logger().Error("save handoff", "error", err)
 		writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not save handoff"})
 		return
@@ -344,6 +389,16 @@ func (api *API) saveCreated(response http.ResponseWriter, handoff types.Handoff)
 	result := api.createResponse(handoff)
 	result.DeleteToken = deleteToken
 	writeJSON(response, http.StatusCreated, result)
+}
+
+func (api *API) getContext(response http.ResponseWriter, request *http.Request) {
+	id := request.PathValue("id")
+	contextAttachment, err := api.Store.GetContext(id)
+	if err != nil {
+		writeJSON(response, http.StatusNotFound, types.ErrorResponse{Error: "attached context not found or expired"})
+		return
+	}
+	writeJSON(response, http.StatusOK, types.ContextResponse{HandoffID: id, Context: contextAttachment})
 }
 
 func (api *API) get(response http.ResponseWriter, request *http.Request) {
