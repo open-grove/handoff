@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Create, receive, inspect, locate, or delete OpenGrove Handoff context across Codex, Claude Code, Pi, people, and sessions. Use when the user asks to hand off or continue work elsewhere; requests a local Session path; provides a handoff code, URL, stable opengrove-handoff reference, or For Human/For Agent message; or asks to manage an existing handoff.
+description: Package current work into a portable, immutable Handoff so another person or Agent can continue it, or receive and manage an existing Handoff. Use only when the user explicitly asks to hand work over, requests a shareable Handoff, provides a Handoff code, URL, or reference to open, asks to give another local Agent the source Session path, or asks to delete an existing Handoff.
 ---
 
 # OpenGrove Handoff

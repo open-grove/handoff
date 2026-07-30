@@ -2,7 +2,7 @@ package skills
 
 import _ "embed"
 
-const Version = "0.10.0"
+const Version = "0.10.1"
 
 type Skill struct {
 	Name        string   `json:"name"`
@@ -28,7 +28,7 @@ var handoffOpenAIYAML string
 
 var handoff = Skill{
 	Name:        "handoff",
-	Description: "Package current Agent context into an audience-aware HANDOFF.md for another person, Agent, or session.",
+	Description: "Package current work into a portable, immutable Handoff for another person or Agent to continue, or receive and manage an existing Handoff.",
 	Version:     Version,
 	Metadata: Metadata{
 		CLIHelp:  "handoff --help; handoff schema <action>",
