@@ -26,7 +26,7 @@ Run `handoff schema <action>` before a complex call. Use exact actions such as `
 
 Use the default command unless the user requests another generator. It starts an ephemeral invocation of the current Agent runtime with that runtime's existing authentication, configuration, and default model. It reads the source Session without resuming, compacting, or modifying it, then uploads only generated sections.
 
-The CLI constructs one canonical Context for every generator: all readable user/assistant messages, normalized and best-effort redacted, with thinking, tool results, provider-internal records, local Session paths, IDs, and cursors excluded. A readable provider-native compact summary is auxiliary evidence; it never replaces the canonical message history and the CLI never invokes native `/compact`.
+The CLI constructs one canonical Context for every generator: readable user/assistant history, normalized and best-effort redacted, with thinking, raw tool results, provider-internal records, local Session paths, IDs, and cursors excluded. It prefers the exact active Agent Session when the provider exposes an ID, respects Codex final/abort/rollback events, and includes direct sub-agent final results. Provisional commentary and Claude sidechain text are explicitly labeled as supporting evidence. A readable provider-native compact summary is auxiliary evidence; it never replaces the canonical message history and the CLI never invokes native `/compact`.
 
 Keep the positional goal short. Put status and requirements in the generated sections, not the title.
 

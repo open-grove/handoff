@@ -41,7 +41,7 @@ var embeddedHandoffURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+(?::[0-9]+)?/
 const usage = `handoff — portable context for people and agents.
 
 AGENT QUICKSTART:
-  handoff create "next goal"                 Auto-detect this workspace's latest Agent session
+  handoff create "next goal"                 Use this workspace's active Agent session when available
   agent-export | handoff create "next goal"  Create from stdin
   handoff create "next goal" --generator cloud
   handoff create "next goal" --attach-context
@@ -494,7 +494,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		}
 	}
 	if outputFormat == "json" || *jsonOutput {
-		return printJSON(createCommandOutput(result, deleteCredentialSaved))
+		return printJSON(createCommandOutput(result, deleteCredentialSaved, generationWarning))
 	}
 	fmt.Print(formatShareMessage(result))
 	if deleteCredentialWarning != nil {
@@ -1655,7 +1655,15 @@ func createOutputSchema() map[string]any {
 		"type":        "boolean",
 		"description": "True when the private per-handoff delete credential was saved locally; the credential itself is never printed.",
 	}
-	handoffOutput["required"] = []string{"handoff", "share_url", "markdown_url", "agent_reference", "share_message", "delete_credential_saved"}
+	properties["fallback_used"] = map[string]any{
+		"type":        "boolean",
+		"description": "True when the requested Agent generator failed and deterministic extraction was used.",
+	}
+	properties["generation_warning"] = map[string]any{
+		"type":        "string",
+		"description": "Redacted Agent generation failure when fallback_used is true.",
+	}
+	handoffOutput["required"] = []string{"handoff", "share_url", "markdown_url", "agent_reference", "share_message", "delete_credential_saved", "fallback_used"}
 	return handoffOutput
 }
 
@@ -1934,7 +1942,7 @@ func resolveStdin(explicit, hasFiles bool) (bool, io.Reader, error) {
 	if !explicit && info.Mode()&os.ModeCharDevice != 0 {
 		return false, nil, nil
 	}
-	data, err := io.ReadAll(io.LimitReader(os.Stdin, 4<<20))
+	data, err := readStdinContext(os.Stdin, 4<<20)
 	if err != nil {
 		return false, nil, err
 	}
@@ -1945,6 +1953,17 @@ func resolveStdin(explicit, hasFiles bool) (bool, io.Reader, error) {
 		return false, nil, nil
 	}
 	return true, bytes.NewReader(data), nil
+}
+
+func readStdinContext(reader io.Reader, limit int) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > limit {
+		return nil, fmt.Errorf("stdin context exceeds the %d MiB limit", limit>>20)
+	}
+	return data, nil
 }
 
 func contextCharacters(input types.Context) int {
@@ -2169,15 +2188,20 @@ func boolMarker(value bool) string {
 	return "✗"
 }
 
-func createCommandOutput(result types.CreateResponse, credentialSaved bool) map[string]any {
-	return map[string]any{
+func createCommandOutput(result types.CreateResponse, credentialSaved bool, generationWarning error) map[string]any {
+	output := map[string]any{
 		"handoff":                 result.Handoff,
 		"share_url":               result.ShareURL,
 		"markdown_url":            result.MarkdownURL,
 		"agent_reference":         agentReference(result.Handoff.ID),
 		"share_message":           formatShareMessage(result),
 		"delete_credential_saved": credentialSaved,
+		"fallback_used":           generationWarning != nil,
 	}
+	if generationWarning != nil {
+		output["generation_warning"] = card.Redact(generationWarning.Error())
+	}
+	return output
 }
 
 func agentReference(id string) string {

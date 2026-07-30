@@ -138,7 +138,7 @@ handoff doctor
 
 所有命令都接受 `--json` 或 `--format text|json`，参数放在命令前后均可。写文件默认不覆盖，显式加 `--force` 才会覆盖。裸分享码默认从 OpenGrove 线上服务读取；profile、`HANDOFF_SERVER` 或完整 URL 可以覆盖服务地址。
 
-`create --json` 额外返回 `agent_reference` 和 `share_message`。稳定引用格式为 `opengrove-handoff:<code>`；调用 Handoff 的 Agent 应原样转发 `share_message`，不能自行改成列表、重命名链接或改写安装提示。文本模式直接输出同一份标准分享消息。
+`create --json` 额外返回 `agent_reference`、`share_message` 和 `fallback_used`。Agent 生成失败并退回确定性提取时，`fallback_used` 为 `true`，同时返回脱敏后的 `generation_warning`。稳定引用格式为 `opengrove-handoff:<code>`；调用 Handoff 的 Agent 应原样转发 `share_message`，不能自行改成列表、重命名链接或改写安装提示。文本模式直接输出同一份标准分享消息。
 
 传给 `handoff create` 的目标应是短任务名，不要把进展说明和需求列表都塞进标题。服务端还会从第一个完整分句生成独立 `title`，并限制为最多 64 个视觉列（约 32 个汉字或 64 个英文字符）；完整目标仍保留在 `For Agent / Goal`，不会因页面标题变短而丢失。
 
@@ -148,20 +148,22 @@ handoff doctor
 
 ## 上下文发现
 
-`--source auto` 按当前工作区和更新时间匹配：
+`--source auto` 先使用当前 Agent 暴露的 Session ID 做精确匹配；没有可用 ID 时，再按当前工作区、主线程优先级和更新时间匹配：
 
 - Codex：`~/.codex/sessions/**/*.jsonl`
 - Claude Code：`~/.claude/projects/**/*.jsonl`
 - Pi：`~/.pi/agent/sessions/**/*.jsonl` 或 `~/.pi/sessions/**/*.jsonl`
 - 永久可用的通用逃生口：stdin 和 `--file`
 
-CLI 总是构造同一份 Canonical Context：全部可读的 user / assistant 消息，经过规范化和尽力脱敏，不提取 thinking、tool result 或 Provider 内部记录。若 Provider 把原生 compact summary 明文写入 Session，它会作为辅助信息保留，但不会替代、删除或截断可读消息：
+CLI 总是构造同一份 Canonical Context：有效的可读 user / assistant 历史，经过规范化和尽力脱敏，不提取 thinking、原始 tool result 或 Provider 内部记录。Codex fork 只使用第一层 `session_meta` 作为自身身份；已 rollback 的回合和 aborted 回合的 assistant 输出会移除，有正式 final 时同回合 commentary 会移除，没有 final 的 commentary 会明确标为临时信息。直属子 Agent 已完成的 final 会合并回来；Claude sidechain 的可读文本会保留并标为辅助信息。若 Provider 把原生 compact summary 明文写入 Session，它会作为辅助信息保留，但不会替代、删除或截断可读消息：
 
 - Claude Code：识别 `isCompactSummary` 消息，同时保留前后的可读对话。
 - Pi：识别 compaction summary，同时保留全部可读对话。
 - Codex：识别 `compacted` 边界；能读取 summary 时把它作为辅助信息，不能读取时也不伪装成已复用。
 
 `handoff create ... --dry-run` 会显示消息数、字符数、`native_compact_found`、是否存在辅助 summary，以及生成阶段与发布阶段各自会发送什么。
+
+stdin 超过 4 MiB 或 Session 中出现损坏的 JSONL 记录时，CLI 会明确报错并指出边界或行号，不会把前半段当成完整上下文继续发布。确定性提取会同时保留辅助 summary 和全部已筛选消息；若最终发布体超过服务端上限，则发布会明确失败。
 
 `--attach-context` 与 generator 完全独立。它把 Canonical Context 作为单独附件持久化到 Handoff 生命周期结束；默认不开启。附件不包含 thinking、tool result、Provider 内部记录、本机 Session 路径、Session ID 或 cursor。上传前会清除已知密钥、私钥、本机用户名路径、邮箱和 IP，但这是 best-effort 规则，无法保证识别自然语言里的全部个人信息。超过 4 MiB 的发布请求会明确失败，不会静默截断。Cloudflare 部署把小型交接卡放在 D1 主表，把可选完整 Context 拆成远低于 D1 单行限制的私有分块，并只经 Worker 的 capability URL 重组读取。
 

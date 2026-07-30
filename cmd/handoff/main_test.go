@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -196,12 +197,26 @@ func TestCreateJSONIncludesCanonicalShareMessage(t *testing.T) {
 		},
 		ShareURL: "https://handoff.openmau.com/h/abcdefghijklmnopqrstuv",
 	}
-	output := createCommandOutput(result, true)
+	output := createCommandOutput(result, true, nil)
 	if output["share_message"] != formatShareMessage(result) {
 		t.Fatalf("share_message = %#v", output["share_message"])
 	}
 	if output["agent_reference"] != "opengrove-handoff:abcdefghijklmnopqrstuv" {
 		t.Fatalf("agent_reference = %#v", output["agent_reference"])
+	}
+	if output["fallback_used"] != false {
+		t.Fatalf("fallback_used = %#v", output["fallback_used"])
+	}
+	warningOutput := createCommandOutput(result, true, errors.New("agent failed"))
+	if warningOutput["fallback_used"] != true || warningOutput["generation_warning"] != "agent failed" {
+		t.Fatalf("fallback warning missing from JSON: %#v", warningOutput)
+	}
+}
+
+func TestReadStdinContextRejectsOversizedInput(t *testing.T) {
+	_, err := readStdinContext(bytes.NewReader(bytes.Repeat([]byte("x"), (4<<20)+1)), 4<<20)
+	if err == nil || !strings.Contains(err.Error(), "exceeds the 4 MiB limit") {
+		t.Fatalf("oversized stdin was silently truncated: %v", err)
 	}
 }
 

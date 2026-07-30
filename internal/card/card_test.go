@@ -50,6 +50,33 @@ func TestSanitizeContextKeepsCompleteReadableHistoryAndAuxiliarySummary(t *testi
 	}
 }
 
+func TestFallbackSectionsKeepsSummaryAndCompleteHistory(t *testing.T) {
+	messages := make([]types.Message, 0, 10)
+	for index := 0; index < 10; index++ {
+		messages = append(messages, types.Message{Role: "user", Text: strings.Repeat("x", 2_100) + string(rune('A'+index))})
+	}
+	result := FallbackSections("continue", types.Context{
+		Source:   "codex",
+		Summary:  "auxiliary summary",
+		Messages: messages,
+	})
+	if !strings.Contains(result.Context, "Native summary (auxiliary)") || !strings.Contains(result.Context, "auxiliary summary") {
+		t.Fatalf("fallback dropped the native summary: %q", result.Context)
+	}
+	for index := 0; index < 10; index++ {
+		marker := string(rune('A' + index))
+		if !strings.Contains(result.Context, marker) {
+			t.Fatalf("fallback dropped or truncated message %d", index)
+		}
+	}
+}
+
+func TestTruncateDoesNotSplitUnicode(t *testing.T) {
+	if got := truncate("你好世界", 3); got != "你好世…" {
+		t.Fatalf("unicode truncate = %q", got)
+	}
+}
+
 func TestContextAttachmentOmitsProviderLocalIdentifiers(t *testing.T) {
 	attachment := BuildContextAttachment(types.Context{
 		Source: "codex", SessionID: "private-session", Cursor: "line:20",

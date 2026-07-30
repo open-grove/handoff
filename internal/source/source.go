@@ -19,13 +19,15 @@ import (
 )
 
 type Options struct {
-	Kind      string
-	Files     []string
-	ReadStdin bool
-	Stdin     io.Reader
-	CWD       string
-	Home      string
-	NoGit     bool
+	Kind               string
+	Files              []string
+	ReadStdin          bool
+	Stdin              io.Reader
+	CWD                string
+	Home               string
+	NoGit              bool
+	PreferredSource    string
+	PreferredSessionID string
 }
 
 type candidate struct {
@@ -33,6 +35,8 @@ type candidate struct {
 	path    string
 	modTime time.Time
 }
+
+const maxStdinBytes = 4 << 20
 
 func Load(options Options) (types.Context, error) {
 	cwd := options.CWD
@@ -64,7 +68,12 @@ func Load(options Options) (types.Context, error) {
 				return types.Context{}, err
 			}
 		}
-		result, err = fromAgent(options.Kind, home, cwd)
+		preferredSource := strings.ToLower(strings.TrimSpace(options.PreferredSource))
+		preferredSessionID := strings.TrimSpace(options.PreferredSessionID)
+		if preferredSessionID == "" {
+			preferredSource, preferredSessionID = activeSessionHint(options.Kind)
+		}
+		result, err = fromAgent(options.Kind, home, cwd, preferredSource, preferredSessionID)
 	}
 	if err != nil {
 		return types.Context{}, err
@@ -76,7 +85,7 @@ func Load(options Options) (types.Context, error) {
 }
 
 func fromReader(kind string, reader io.Reader, cwd string) (types.Context, error) {
-	data, err := io.ReadAll(io.LimitReader(reader, 4<<20))
+	data, err := readLimited(reader, maxStdinBytes)
 	if err != nil {
 		return types.Context{}, err
 	}
@@ -92,6 +101,17 @@ func fromReader(kind string, reader io.Reader, cwd string) (types.Context, error
 		Cursor:    "input:1",
 		Messages:  []types.Message{{Role: "user", Text: text, At: now}},
 	}, nil
+}
+
+func readLimited(reader io.Reader, limit int) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > limit {
+		return nil, fmt.Errorf("stdin context exceeds the %d MiB limit", limit>>20)
+	}
+	return data, nil
 }
 
 func fromFiles(paths []string, cwd string) (types.Context, error) {
@@ -124,7 +144,7 @@ func fromFiles(paths []string, cwd string) (types.Context, error) {
 	}, nil
 }
 
-func fromAgent(kind, home, cwd string) (types.Context, error) {
+func fromAgent(kind, home, cwd, preferredSource, preferredSessionID string) (types.Context, error) {
 	if kind == "" {
 		kind = "auto"
 	}
@@ -143,35 +163,105 @@ func fromAgent(kind, home, cwd string) (types.Context, error) {
 		candidates = append(candidates, findCandidates("pi", filepath.Join(home, ".pi", "agent", "sessions"))...)
 		candidates = append(candidates, findCandidates("pi", filepath.Join(home, ".pi", "sessions"))...)
 	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].modTime.After(candidates[j].modTime) })
+	sort.SliceStable(candidates, func(i, j int) bool {
+		leftPreferred := candidateMatchesSession(candidates[i], preferredSource, preferredSessionID)
+		rightPreferred := candidateMatchesSession(candidates[j], preferredSource, preferredSessionID)
+		if leftPreferred != rightPreferred {
+			return leftPreferred
+		}
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
+	allCandidates := candidates
 	if len(candidates) > 200 {
 		candidates = candidates[:200]
 	}
 
+	var selected *types.Context
+	selectedRank := 100
 	for _, item := range candidates {
-		file, err := os.Open(item.path)
-		if err != nil {
+		parsed, parseErr := loadCandidate(item)
+		if parseErr != nil {
+			if candidateMatchesSession(item, preferredSource, preferredSessionID) || sameWorkspace(parsed.CWD, cwd) {
+				return types.Context{}, fmt.Errorf("parse Agent session %s: %w", item.path, parseErr)
+			}
 			continue
 		}
-		var parsed types.Context
-		switch item.kind {
-		case "codex":
-			parsed, err = parseCodex(file)
-		case "claude":
-			parsed, err = parseClaude(file)
-		default:
-			parsed, err = parsePi(file)
-		}
-		file.Close()
-		if err != nil || len(parsed.Messages) == 0 || !sameWorkspace(parsed.CWD, cwd) {
+		if len(parsed.Messages) == 0 || !sameWorkspace(parsed.CWD, cwd) {
 			continue
 		}
 		parsed.Source = item.kind
 		parsed.SessionPath = item.path
 		parsed.UpdatedAt = item.modTime.UTC()
-		return parsed, nil
+		rank := sessionCandidateRank(parsed, item.kind, preferredSource, preferredSessionID)
+		if selected == nil || rank < selectedRank {
+			copy := parsed
+			selected = &copy
+			selectedRank = rank
+		}
+		if rank == 0 {
+			break
+		}
 	}
-	return types.Context{}, errors.New("no recent Agent session matched this workspace; pipe context on stdin or pass --file")
+	if selected == nil {
+		return types.Context{}, errors.New("no recent Agent session matched this workspace; pipe context on stdin or pass --file")
+	}
+	if selected.Source == "codex" {
+		if err := mergeCodexChildFinals(selected, allCandidates, cwd); err != nil {
+			return types.Context{}, err
+		}
+	}
+	return *selected, nil
+}
+
+func activeSessionHint(requestedKind string) (string, string) {
+	requestedKind = strings.ToLower(strings.TrimSpace(requestedKind))
+	allowed := func(kind string) bool { return requestedKind == "" || requestedKind == "auto" || requestedKind == kind }
+	switch {
+	case allowed("codex") && strings.TrimSpace(os.Getenv("CODEX_THREAD_ID")) != "":
+		return "codex", strings.TrimSpace(os.Getenv("CODEX_THREAD_ID"))
+	case allowed("claude") && strings.TrimSpace(os.Getenv("CLAUDE_CODE_SESSION_ID")) != "":
+		return "claude", strings.TrimSpace(os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	case allowed("pi") && strings.TrimSpace(os.Getenv("PI_SESSION_ID")) != "":
+		return "pi", strings.TrimSpace(os.Getenv("PI_SESSION_ID"))
+	default:
+		return "", ""
+	}
+}
+
+func candidateMatchesSession(item candidate, preferredSource, preferredSessionID string) bool {
+	return preferredSessionID != "" && item.kind == preferredSource && strings.Contains(filepath.Base(item.path), preferredSessionID)
+}
+
+func sessionCandidateRank(parsed types.Context, kind, preferredSource, preferredSessionID string) int {
+	if preferredSessionID != "" && kind == preferredSource && parsed.SessionID == preferredSessionID {
+		return 0
+	}
+	if preferredSource != "" && kind == preferredSource && parsed.ThreadSource != "subagent" {
+		return 1
+	}
+	if parsed.ThreadSource != "subagent" {
+		return 2
+	}
+	if preferredSource != "" && kind == preferredSource {
+		return 3
+	}
+	return 4
+}
+
+func loadCandidate(item candidate) (types.Context, error) {
+	file, err := os.Open(item.path)
+	if err != nil {
+		return types.Context{}, err
+	}
+	defer file.Close()
+	switch item.kind {
+	case "codex":
+		return parseCodex(file)
+	case "claude":
+		return parseClaude(file)
+	default:
+		return parsePi(file)
+	}
 }
 
 func findCandidates(kind, root string) []candidate {
@@ -195,16 +285,97 @@ func ParseCodex(reader io.Reader) (types.Context, error) {
 
 func parseCodex(reader io.Reader) (types.Context, error) {
 	var output types.Context
+	var identityFound bool
+	var createdAt time.Time
+	currentTurn := ""
+	turnOrder := make([]string, 0)
+	knownTurns := map[string]bool{}
+	completedTurns := map[string]bool{}
+	abortedTurns := map[string]bool{}
+	rolledBackTurns := map[string]bool{}
+	ownedTurns := map[string]bool{}
+	lastAgentMessage := map[string]string{}
+	childSessions := map[string]types.ChildSessionRef{}
 	err := parseJSONLines(reader, func(line int, value map[string]any) {
 		payload := object(value["payload"])
+		eventAt := parseTime(value["timestamp"])
 		switch stringValue(value["type"]) {
 		case "session_meta":
+			if identityFound {
+				return
+			}
+			identityFound = true
 			output.CWD = stringValue(payload["cwd"])
 			output.SessionID = firstString(payload["id"], payload["session_id"])
+			output.ThreadSource = stringValue(payload["thread_source"])
+			output.ParentSessionID = firstString(payload["parent_thread_id"], nestedString(payload, "source", "subagent", "thread_spawn", "parent_thread_id"))
+			if output.ParentSessionID == "" {
+				if sessionID := stringValue(payload["session_id"]); sessionID != output.SessionID {
+					output.ParentSessionID = sessionID
+				}
+			}
+			output.AgentPath = firstString(payload["agent_path"], nestedString(payload, "source", "subagent", "thread_spawn", "agent_path"))
+			if output.ThreadSource == "" && output.ParentSessionID != "" {
+				output.ThreadSource = "subagent"
+			}
+			createdAt = parseTime(payload["timestamp"])
+			if createdAt.IsZero() {
+				createdAt = eventAt
+			}
 		case "compacted":
 			output.NativeCompactFound = true
 			if summary := codexCompactSummary(payload); summary != "" {
 				output.Summary = summary
+			}
+		case "event_msg":
+			switch stringValue(payload["type"]) {
+			case "task_started":
+				currentTurn = stringValue(payload["turn_id"])
+				if currentTurn == "" {
+					return
+				}
+				if !knownTurns[currentTurn] {
+					knownTurns[currentTurn] = true
+					turnOrder = append(turnOrder, currentTurn)
+				}
+				if output.ThreadSource != "subagent" || eventOwned(eventAt, createdAt) {
+					ownedTurns[currentTurn] = true
+				}
+			case "task_complete":
+				turnID := firstString(payload["turn_id"], currentTurn)
+				if turnID != "" {
+					completedTurns[turnID] = true
+					if text := stringValue(payload["last_agent_message"]); text != "" {
+						lastAgentMessage[turnID] = text
+					}
+				}
+			case "turn_aborted":
+				if turnID := firstString(payload["turn_id"], currentTurn); turnID != "" {
+					abortedTurns[turnID] = true
+				}
+			case "thread_rolled_back":
+				count := intValue(payload["num_turns"])
+				for count > 0 && len(turnOrder) > 0 {
+					index := len(turnOrder) - 1
+					turnID := turnOrder[index]
+					turnOrder = turnOrder[:index]
+					rolledBackTurns[turnID] = true
+					delete(knownTurns, turnID)
+					count--
+				}
+				currentTurn = ""
+			case "sub_agent_activity":
+				if output.ThreadSource == "subagent" && !eventOwned(eventAt, createdAt) {
+					return
+				}
+				id := stringValue(payload["agent_thread_id"])
+				if id == "" || id == output.SessionID {
+					return
+				}
+				childSessions[id] = types.ChildSessionRef{
+					ID:        id,
+					AgentPath: stringValue(payload["agent_path"]),
+				}
 			}
 		case "response_item":
 			if stringValue(payload["type"]) != "message" {
@@ -215,12 +386,87 @@ func parseCodex(reader io.Reader) (types.Context, error) {
 				return
 			}
 			if text := contentText(payload["content"]); text != "" {
-				output.Messages = append(output.Messages, types.Message{Role: role, Text: text, At: parseTime(value["timestamp"])})
+				turnID := firstString(nestedString(payload, "internal_chat_message_metadata_passthrough", "turn_id"), currentTurn)
+				owned := output.ThreadSource != "subagent" || ownedTurns[turnID] || eventOwned(eventAt, createdAt)
+				output.Messages = append(output.Messages, types.Message{
+					Role:   role,
+					Text:   text,
+					At:     eventAt,
+					Phase:  stringValue(payload["phase"]),
+					TurnID: turnID,
+					Owned:  owned,
+				})
 				output.Cursor = fmt.Sprintf("line:%d", line)
 			}
 		}
 	})
-	return output, err
+	if err != nil {
+		return output, err
+	}
+	output.Messages = finalizeCodexMessages(output.Messages, turnOrder, completedTurns, abortedTurns, rolledBackTurns, ownedTurns, lastAgentMessage, output.ThreadSource != "subagent")
+	for _, ref := range childSessions {
+		output.ChildSessions = append(output.ChildSessions, ref)
+	}
+	sort.Slice(output.ChildSessions, func(i, j int) bool {
+		return output.ChildSessions[i].ID < output.ChildSessions[j].ID
+	})
+	return output, nil
+}
+
+func finalizeCodexMessages(
+	messages []types.Message,
+	turnOrder []string,
+	completedTurns, abortedTurns, rolledBackTurns map[string]bool,
+	ownedTurns map[string]bool,
+	lastAgentMessage map[string]string,
+	rootSession bool,
+) []types.Message {
+	hasFinal := map[string]bool{}
+	for index := range messages {
+		message := &messages[index]
+		if message.Role != "assistant" || abortedTurns[message.TurnID] || rolledBackTurns[message.TurnID] {
+			continue
+		}
+		if completedTurns[message.TurnID] && strings.TrimSpace(message.Text) == strings.TrimSpace(lastAgentMessage[message.TurnID]) {
+			message.Phase = "final_answer"
+		}
+		if message.Phase == "final_answer" {
+			hasFinal[message.TurnID] = true
+		}
+	}
+	for _, turnID := range turnOrder {
+		text := lastAgentMessage[turnID]
+		if text == "" || abortedTurns[turnID] || rolledBackTurns[turnID] || hasFinal[turnID] {
+			continue
+		}
+		messages = append(messages, types.Message{
+			Role:      "assistant",
+			Text:      text,
+			Phase:     "final_answer",
+			TurnID:    turnID,
+			Owned:     rootSession || ownedTurns[turnID],
+			Completed: true,
+		})
+		hasFinal[turnID] = true
+	}
+	output := messages[:0]
+	for _, message := range messages {
+		if rolledBackTurns[message.TurnID] {
+			continue
+		}
+		if message.Role == "assistant" && abortedTurns[message.TurnID] {
+			continue
+		}
+		message.Completed = completedTurns[message.TurnID] || message.Phase == "final_answer"
+		if message.Role == "assistant" && message.Phase == "commentary" {
+			if hasFinal[message.TurnID] {
+				continue
+			}
+			message.Text = "[Provisional commentary; not a final answer]\n" + message.Text
+		}
+		output = append(output, message)
+	}
+	return output
 }
 
 func ParseClaude(reader io.Reader) (types.Context, error) {
@@ -241,7 +487,7 @@ func parseClaude(reader io.Reader) (types.Context, error) {
 			output.NativeCompactFound = true
 			return
 		}
-		if entryType != "user" && entryType != "assistant" || boolValue(value["isSidechain"]) || boolValue(value["isMeta"]) {
+		if entryType != "user" && entryType != "assistant" || boolValue(value["isMeta"]) {
 			return
 		}
 		message := object(value["message"])
@@ -259,6 +505,9 @@ func parseClaude(reader io.Reader) (types.Context, error) {
 			role = entryType
 		}
 		if text := contentText(message["content"]); text != "" {
+			if boolValue(value["isSidechain"]) {
+				text = "[Sidechain result; supporting context, not a final answer]\n" + text
+			}
 			output.Messages = append(output.Messages, types.Message{Role: role, Text: text, At: parseTime(value["timestamp"])})
 			output.Cursor = firstString(value["uuid"], fmt.Sprintf("line:%d", line))
 		}
@@ -325,12 +574,91 @@ func parseJSONLines(reader io.Reader, visit func(int, map[string]any)) error {
 	line := 0
 	for scanner.Scan() {
 		line++
+		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+			continue
+		}
 		var value map[string]any
-		if json.Unmarshal(scanner.Bytes(), &value) == nil {
-			visit(line, value)
+		if err := json.Unmarshal(scanner.Bytes(), &value); err != nil {
+			return fmt.Errorf("invalid JSONL at line %d: %w", line, err)
+		}
+		visit(line, value)
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read JSONL at line %d: %w", line+1, err)
+	}
+	return nil
+}
+
+func mergeCodexChildFinals(primary *types.Context, candidates []candidate, cwd string) error {
+	if primary == nil || len(primary.ChildSessions) == 0 {
+		return nil
+	}
+	existing := make(map[string]bool, len(primary.Messages))
+	for _, message := range primary.Messages {
+		existing[strings.TrimSpace(message.Text)] = true
+	}
+	for _, ref := range primary.ChildSessions {
+		var childCandidate *candidate
+		for index := range candidates {
+			item := candidates[index]
+			if item.kind == "codex" && strings.Contains(filepath.Base(item.path), ref.ID) {
+				copy := item
+				childCandidate = &copy
+				break
+			}
+		}
+		if childCandidate == nil {
+			continue
+		}
+		child, err := loadCandidate(*childCandidate)
+		if err != nil {
+			return fmt.Errorf("parse child Agent session %s: %w", childCandidate.path, err)
+		}
+		if child.SessionID != ref.ID || child.ParentSessionID != primary.SessionID || !sameWorkspace(child.CWD, cwd) {
+			continue
+		}
+		for _, message := range childFinalMessages(child.Messages) {
+			text := strings.TrimSpace(message.Text)
+			if text == "" || existing[text] {
+				continue
+			}
+			label := firstString(ref.AgentPath, child.AgentPath, ref.ID)
+			message.Text = fmt.Sprintf("[Sub-agent final result: %s]\n%s", label, text)
+			message.Phase = "final_answer"
+			message.Owned = true
+			message.Completed = true
+			primary.Messages = append(primary.Messages, message)
+			existing[text] = true
 		}
 	}
-	return scanner.Err()
+	return nil
+}
+
+func childFinalMessages(messages []types.Message) []types.Message {
+	var finals []types.Message
+	for _, message := range messages {
+		if message.Role == "assistant" && message.Owned && message.Phase == "final_answer" {
+			finals = append(finals, message)
+		}
+	}
+	if len(finals) > 0 {
+		return finals
+	}
+	lastByTurn := map[string]types.Message{}
+	var order []string
+	for _, message := range messages {
+		if message.Role != "assistant" || !message.Owned || !message.Completed {
+			continue
+		}
+		if _, found := lastByTurn[message.TurnID]; !found {
+			order = append(order, message.TurnID)
+		}
+		lastByTurn[message.TurnID] = message
+	}
+	for _, turnID := range order {
+		finals = append(finals, lastByTurn[turnID])
+	}
+	return finals
 }
 
 func inspectRepository(cwd string) types.Repository {
@@ -444,6 +772,18 @@ func boolValue(value any) bool {
 	return result
 }
 
+func intValue(value any) int {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed)
+	case json.Number:
+		result, _ := typed.Int64()
+		return int(result)
+	default:
+		return 0
+	}
+}
+
 func firstString(values ...any) string {
 	for _, value := range values {
 		if result := stringValue(value); result != "" {
@@ -451,4 +791,16 @@ func firstString(values ...any) string {
 		}
 	}
 	return ""
+}
+
+func nestedString(value map[string]any, keys ...string) string {
+	var current any = value
+	for _, key := range keys {
+		current = object(current)[key]
+	}
+	return stringValue(current)
+}
+
+func eventOwned(eventAt, createdAt time.Time) bool {
+	return createdAt.IsZero() || eventAt.IsZero() || !eventAt.Before(createdAt)
 }

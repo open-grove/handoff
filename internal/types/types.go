@@ -9,9 +9,18 @@ const (
 )
 
 type Message struct {
-	Role string    `json:"role"`
-	Text string    `json:"text"`
-	At   time.Time `json:"at,omitempty"`
+	Role      string    `json:"role"`
+	Text      string    `json:"text"`
+	At        time.Time `json:"at,omitempty"`
+	Phase     string    `json:"-"`
+	TurnID    string    `json:"-"`
+	Owned     bool      `json:"-"`
+	Completed bool      `json:"-"`
+}
+
+type ChildSessionRef struct {
+	ID        string `json:"-"`
+	AgentPath string `json:"-"`
 }
 
 type Repository struct {
@@ -36,6 +45,11 @@ type Context struct {
 	FullSession bool       `json:"full_session,omitempty"`
 	Messages    []Message  `json:"messages"`
 	Repo        Repository `json:"repository,omitempty"`
+
+	ParentSessionID string            `json:"-"`
+	ThreadSource    string            `json:"-"`
+	AgentPath       string            `json:"-"`
+	ChildSessions   []ChildSessionRef `json:"-"`
 }
 
 // ContextAttachment is the portable, sanitized readable conversation that may
