@@ -1,4 +1,4 @@
-.PHONY: build test clean
+.PHONY: build test test-worker clean
 
 build:
 	mkdir -p bin
@@ -7,6 +7,9 @@ build:
 
 test:
 	go test ./...
+
+test-worker:
+	npm test --prefix cloudflare
 
 clean:
 	rm -rf bin

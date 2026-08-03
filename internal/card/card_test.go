@@ -370,6 +370,37 @@ func TestHTMLRendersMarkdownWithoutRawHTML(t *testing.T) {
 	}
 }
 
+func TestHTMLRendersInlineAndDisplayMathWithoutTouchingCode(t *testing.T) {
+	page := HTML(types.Handoff{
+		ID:   "abcdefghijklmnopqrstuv",
+		Goal: "Explain reward scores",
+		Markdown: "---\nversion: 6\n---\n\n# Math\n\nInline $s_A = f_\\theta(p,r_A)$ works.\n\n" +
+			"$$\nP(A \\succ B)=\\frac{e^{s_A}}{e^{s_A}+e^{s_B}}\n$$\n\n```text\n$not_math$\n```",
+	})
+	for _, expected := range []string{`class="math-inline"`, `class="math-display"`, "<math", "<mfrac", "<msub", "<msup"} {
+		if !strings.Contains(page, expected) {
+			t.Fatalf("rendered page does not contain %q: %s", expected, page)
+		}
+	}
+	if !strings.Contains(page, "$not_math$") || !strings.Contains(page, `<code class="language-text">`) {
+		t.Fatalf("math inside code fence was changed: %s", page)
+	}
+}
+
+func TestHTMLMathRenderingCannotInjectRawHTML(t *testing.T) {
+	page := HTML(types.Handoff{
+		ID:       "abcdefghijklmnopqrstuv",
+		Goal:     "Safe math",
+		Markdown: "# Math\n\n$\\text{<script>alert(1)</script>}$\n\n$\\class{evil\\\" onclick=\\\"alert(1)}{x}$",
+	})
+	if strings.Contains(page, "<script>") || strings.Contains(page, `onclick="alert`) {
+		t.Fatalf("unsafe HTML escaped the math renderer: %s", page)
+	}
+	if !strings.Contains(page, `class="math-source"`) {
+		t.Fatalf("unsupported math did not fall back to escaped source: %s", page)
+	}
+}
+
 type invalidCompactor struct{}
 
 func (invalidCompactor) Compact(context.Context, string, string, types.Context) (Sections, error) {

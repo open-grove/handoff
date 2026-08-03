@@ -18,6 +18,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloudflare/package-lock.json
+
       - name: Verify release version
         shell: bash
         run: |
@@ -25,8 +31,13 @@ jobs:
           actual="$(sed -n 's/^const Version = "\(.*\)"/\1/p' skills/embed.go)"
           test "$expected" = "$actual"
 
-      - name: Test
+      - name: Test Go services
         run: go test ./...
+
+      - name: Test Cloudflare Worker
+        run: |
+          npm ci --prefix cloudflare
+          npm test --prefix cloudflare
 
       - name: Build release archives
         shell: bash

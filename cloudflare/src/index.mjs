@@ -1,3 +1,5 @@
+import katex from "katex";
+
 const PROTOCOL_VERSION = 6;
 const CONTEXT_ATTACHMENT_VERSION = 1;
 const REDACTION_VERSION = "best-effort-v1";
@@ -998,19 +1000,19 @@ export function renderHTML(handoff, sections) {
     ["Open Questions", sections.open_questions],
   ];
   if (intent === "share") agentSectionValues = agentSectionValues.filter(([, value]) => hasSectionValue(value));
-  const agentSections = agentSectionValues.map(([sectionTitle, value]) => `<section><h3>${escapeHTML(sectionTitle)}</h3>${Array.isArray(value) ? renderItems(value) : renderText(value)}</section>`).join("");
+  const agentSections = agentSectionValues.map(([sectionTitle, value]) => `<section><h3>${escapeHTML(sectionTitle)}</h3>${Array.isArray(value) ? renderItems(value) : renderSectionBody(value)}</section>`).join("");
   const humanTitle = intent === "share" ? "讨论成果" : "先看这里";
   const agentTitle = intent === "share" ? "技术附录" : "Agent 交接上下文";
 
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)} · OpenGrove Handoff</title><style>
 :root{color-scheme:light;--bg:#f7f7f5;--paper:#fff;--ink:#252525;--muted:#74746f;--line:#e7e6e2;--accent:#635bda;--accent-soft:#eeecff;--green:#247a52;--green-soft:#e9f7ef;--shadow:0 18px 60px rgba(31,31,28,.07)}*{box-sizing:border-box}html,body{margin:0;background:var(--bg)}body{color:var(--ink);font:16px/1.7 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}.shell{width:min(900px,calc(100% - 32px));margin:auto;padding:24px 0 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:42px}.brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-size:14px;font-weight:720;text-decoration:none}.brand-mark{display:grid;place-items:center;flex:0 0 auto;width:30px;height:30px;padding:2px;border:1px solid var(--line);border-radius:9px;background:#fbfbfa}.brand-mark svg{display:block;width:100%;height:100%}.brand small{color:var(--muted);font-size:14px;font-weight:540}.raw-link{padding:6px 13px;border:1px solid var(--line);border-radius:10px;color:var(--muted);background:var(--paper);font-size:13px;font-weight:650;text-decoration:none}.hero,.content{max-width:760px;margin-left:auto;margin-right:auto}.hero{margin-bottom:22px;text-align:center}.hero h1{margin:0;font-size:clamp(1.65rem,3.5vw,2.35rem);line-height:1.22;letter-spacing:-.035em}.content{display:grid;gap:16px}.panel{border:1px solid var(--line);border-radius:20px;background:var(--paper);overflow:hidden}.human-panel{padding:30px clamp(22px,5vw,46px) 38px;box-shadow:var(--shadow)}.panel-heading{display:flex;align-items:center;gap:13px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--line)}.audience-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:var(--accent-soft);font-size:18px}.eyebrow{display:block;color:var(--accent);font-size:11px;line-height:1.35;font-weight:780;letter-spacing:.12em}.panel-heading h2{margin:3px 0 0;font-size:18px}.human-content{display:grid;grid-template-columns:1fr 1fr;gap:22px 30px}.summary-block:last-child{grid-column:1/-1;padding-top:22px;border-top:1px solid var(--line)}h3{margin:0 0 9px;font-size:14px}.human-content h3{color:var(--green)}p,ul{margin:0}ul{padding-left:1.2em}li+li{margin-top:5px}.agent-panel{background:rgba(255,255,255,.58)}.agent-panel summary{display:flex;align-items:center;justify-content:space-between;padding:21px 24px;cursor:pointer;list-style:none}.agent-panel summary::-webkit-details-marker{display:none}.summary-main{display:flex;align-items:center;gap:13px}.summary-main strong{display:block;margin-top:3px;font-size:15px}.chevron{font-size:28px;color:var(--muted);transform:rotate(90deg)}.agent-panel[open] .chevron{transform:rotate(-90deg)}.agent-body{padding:24px;border-top:1px solid var(--line)}.agent-instruction{margin:0 0 28px;padding:18px 20px;border:1px solid #dcd8ff;border-radius:14px;background:var(--accent-soft)}.agent-instruction p{margin-top:5px}.agent-instruction a{color:var(--accent);font-size:13px}.agent-content{display:grid;gap:24px}.agent-content h3{font-size:15px}.agent-content p{white-space:pre-wrap}.agent-content code,.agent-instruction code{padding:.13em .38em;border-radius:5px;background:#f0f0ed;font: .9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#171716;--paper:#232322;--ink:#f1f1ef;--muted:#a4a49f;--line:#373735;--accent:#a9a3ff;--accent-soft:#302e4b;--green:#72c99a;--green-soft:#203a2d;--shadow:0 20px 65px rgba(0,0,0,.25)}.agent-panel{background:rgba(35,35,34,.72)}.agent-content code,.agent-instruction code{background:#30302e}.agent-instruction{border-color:#48436d}}@media(max-width:640px){.shell{width:min(100% - 20px,900px);padding-top:18px}.topbar{margin-bottom:32px}.hero h1{font-size:1.75rem}.human-panel{padding:24px 20px 30px}.human-content{display:block}.summary-block{margin-top:24px}.summary-block:first-child{margin-top:0}.summary-block:last-child{padding-top:24px}.agent-panel summary{padding:18px}.agent-body{padding:18px}}
-.human-content{display:grid;grid-template-columns:1fr;gap:0}.summary-block{min-width:0;margin:0;padding:22px 0;border-top:1px solid var(--line)}.summary-block:first-child{padding-top:0;border-top:0}.summary-block:last-child{padding-bottom:0}.human-content p+p,.human-content p+ul,.human-content ul+p{margin-top:12px}.human-content pre{overflow:auto;margin:14px 0 0;padding:14px;border-radius:10px;color:#ececf0;background:#202022}.human-content code{padding:.13em .38em;border-radius:5px;background:#f0f0ed;font:.9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.human-content pre code{padding:0;background:none}@media(prefers-color-scheme:dark){.human-content code{background:#30302e}.human-content pre{background:#111}.human-content pre code{background:none}}
+.human-content{display:grid;grid-template-columns:1fr;gap:0}.summary-block{min-width:0;margin:0;padding:22px 0;border-top:1px solid var(--line)}.summary-block:first-child{padding-top:0;border-top:0}.summary-block:last-child{padding-bottom:0}.human-content p+p,.human-content p+ul,.human-content ul+p{margin-top:12px}.human-content pre{overflow:auto;margin:14px 0 0;padding:14px;border-radius:10px;color:#ececf0;background:#202022}.human-content code{padding:.13em .38em;border-radius:5px;background:#f0f0ed;font:.9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.human-content pre code{padding:0;background:none}.math-inline{display:inline-block;max-width:100%;vertical-align:-.15em}.math-display{display:block;max-width:100%;margin:1.15em 0;overflow-x:auto;padding:.2em 0;text-align:center}.math-display .katex{display:inline-block;min-width:max-content}.math-display math{font-size:1.08em}.math-inline math{font-size:1em}.math-source-display{display:block;overflow-x:auto;padding:.7em}@media(prefers-color-scheme:dark){.human-content code{background:#30302e}.human-content pre{background:#111}.human-content pre code{background:none}}
 </style></head><body><div class="shell"><header class="topbar"><a class="brand" href="https://github.com/open-grove/handoff" aria-label="Open OpenGrove Handoff on GitHub"><span class="brand-mark">${OPENGROVE_SAPLING_SVG}</span><div>OpenGrove <small>/ Handoff</small></div></a><a class="raw-link" href="./${escapeHTML(handoff.id)}.md">Markdown ↗</a></header><main><section class="hero"><h1>${escapeHTML(title)}</h1></section><div class="content"><section class="panel human-panel"><div class="panel-heading"><span class="audience-icon" aria-hidden="true">🖐️</span><div><span class="eyebrow">FOR HUMAN</span><h2>${humanTitle}</h2></div></div><div class="human-content">${humanBlocks}</div></section><details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>${agentTitle}</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span class="eyebrow">给 Agent 的指令</span><p>请使用 <strong>OpenGrove Handoff</strong> 读取：<code>opengrove-handoff:${escapeHTML(handoff.id)}</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a>${contextLink}</div><div class="agent-content">${agentSections}</div></div></details></div></main></div></body></html>`;
 }
 
 function renderText(value) {
   const text = sanitizeText(value) || "Unknown";
-  return `<p>${inlineMarkdown(text)}</p>`;
+  return renderSectionBody(text);
 }
 
 function renderSectionBody(value) {
@@ -1034,7 +1036,8 @@ function renderSectionBody(value) {
     output.push(`<pre><code>${escapeHTML(code.join("\n"))}</code></pre>`);
     code = [];
   };
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
     if (line.trim().startsWith("```")) {
       if (inCode) flushCode();
       else { flushParagraph(); flushItems(); }
@@ -1042,6 +1045,14 @@ function renderSectionBody(value) {
       continue;
     }
     if (inCode) { code.push(line); continue; }
+    const mathBlock = collectDisplayMath(lines, lineIndex);
+    if (mathBlock) {
+      flushParagraph();
+      flushItems();
+      output.push(renderMathMarkup(mathBlock.source, true, mathBlock.original));
+      lineIndex = mathBlock.endIndex;
+      continue;
+    }
     const item = line.match(/^\s*[-*]\s+(.+)$/);
     if (item) { flushParagraph(); items.push(item[1]); continue; }
     if (!line.trim()) { flushParagraph(); flushItems(); continue; }
@@ -1065,10 +1076,141 @@ function hasSectionValue(value) {
 }
 
 function inlineMarkdown(value) {
-  return escapeHTML(value)
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\n/g, "<br>");
+  const source = String(value || "");
+  let output = "";
+  let plain = "";
+  const flushPlain = () => {
+    if (!plain) return;
+    output += escapeHTML(plain)
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\n/g, "<br>");
+    plain = "";
+  };
+
+  for (let index = 0; index < source.length;) {
+    if (source[index] === "`") {
+      const close = source.indexOf("`", index + 1);
+      if (close >= 0) {
+        flushPlain();
+        output += `<code>${escapeHTML(source.slice(index + 1, close))}</code>`;
+        index = close + 1;
+        continue;
+      }
+    }
+
+    let open = "";
+    let close = "";
+    if (source.startsWith("\\(", index) && !isEscapedCharacter(source, index)) {
+      open = "\\(";
+      close = "\\)";
+    } else if (source[index] === "$" && !source.startsWith("$$", index) &&
+      !isEscapedCharacter(source, index) && validInlineMathOpenJS(source, index)) {
+      open = "$";
+      close = "$";
+    }
+    if (open) {
+      const closeIndex = findInlineMathClose(source, index + open.length, close);
+      if (closeIndex >= 0) {
+        const mathSource = source.slice(index + open.length, closeIndex).trim();
+        if (mathSource && mathSource.length <= MAX_MATH_EXPRESSION_CHARS) {
+          flushPlain();
+          const original = source.slice(index, closeIndex + close.length);
+          output += renderMathMarkup(mathSource, false, original);
+          index = closeIndex + close.length;
+          continue;
+        }
+      }
+    }
+
+    plain += source[index];
+    index += 1;
+  }
+  flushPlain();
+  return output;
+}
+
+const MAX_MATH_EXPRESSION_CHARS = 8 * 1024;
+
+function collectDisplayMath(lines, startIndex) {
+  const trimmed = lines[startIndex].trim();
+  let open;
+  let close;
+  if (trimmed.startsWith("$$")) {
+    open = "$$";
+    close = "$$";
+  } else if (trimmed.startsWith("\\[")) {
+    open = "\\[";
+    close = "\\]";
+  } else {
+    return null;
+  }
+
+  const body = [];
+  const first = trimmed.slice(open.length);
+  const sameLineClose = first.lastIndexOf(close);
+  if (sameLineClose >= 0 && !first.slice(sameLineClose + close.length).trim()) {
+    const source = first.slice(0, sameLineClose).trim();
+    return source && source.length <= MAX_MATH_EXPRESSION_CHARS
+      ? { source, original: trimmed, endIndex: startIndex }
+      : null;
+  }
+  if (first) body.push(first);
+
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    const closingIndex = line.lastIndexOf(close);
+    if (closingIndex >= 0 && !line.slice(closingIndex + close.length).trim()) {
+      body.push(line.slice(0, closingIndex));
+      const source = body.join("\n").trim();
+      const original = lines.slice(startIndex, index + 1).join("\n");
+      return source && source.length <= MAX_MATH_EXPRESSION_CHARS
+        ? { source, original, endIndex: index }
+        : null;
+    }
+    body.push(line);
+  }
+  return null;
+}
+
+function renderMathMarkup(source, displayMode, original) {
+  try {
+    const mathML = katex.renderToString(source, {
+      displayMode,
+      output: "mathml",
+      throwOnError: true,
+      strict: "error",
+      trust: false,
+      maxExpand: 1000,
+      maxSize: 20,
+    });
+    return displayMode
+      ? `<div class="math-display">${mathML}</div>`
+      : `<span class="math-inline">${mathML}</span>`;
+  } catch {
+    const className = displayMode ? "math-source math-source-display" : "math-source";
+    return `<code class="${className}">${escapeHTML(original)}</code>`;
+  }
+}
+
+function validInlineMathOpenJS(value, index) {
+  if (index + 1 >= value.length) return false;
+  return !/[\s$]/.test(value[index + 1]);
+}
+
+function findInlineMathClose(value, start, delimiter) {
+  for (let index = start; index < value.length; index += 1) {
+    if (!value.startsWith(delimiter, index) || isEscapedCharacter(value, index)) continue;
+    if (delimiter === "$" && (value.startsWith("$$", index) || /\s/.test(value[index - 1] || ""))) continue;
+    if (value.slice(start, index).includes("\n")) return -1;
+    return index;
+  }
+  return -1;
+}
+
+function isEscapedCharacter(value, index) {
+  let backslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) backslashes += 1;
+  return backslashes % 2 === 1;
 }
 
 function randomID() {

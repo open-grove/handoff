@@ -178,6 +178,60 @@ test("share handoffs preserve conclusions without inventing task sections", asyn
   assert.match(page, /<pre><code>View -&gt; Host<\/code><\/pre>/);
 });
 
+test("share pages render inline and display LaTeX as native MathML", () => {
+  const body = String.raw`Inline $s_A = f_\theta(p,r_A)$ works.
+
+$$
+P(A \succ B)=\frac{e^{s_A}}{e^{s_A}+e^{s_B}}
+$$
+
+\[
+q=\frac{e^{s_{new}}}{e^{s_{new}}+e^{s_{reference}}}
+\]` + "\n\n`$not_math$`";
+  const page = renderHTML({
+    id: "abcdefghijklmnopqrstuv",
+    title: "Math",
+    goal: "Explain math",
+    intent: "share",
+  }, {
+    intent: "share",
+    human_sections: [{ title: "公式", body }],
+    context: String.raw`Agent detail: \(P(i \succ j)=\sigma(\beta_i-\beta_j)\).`,
+    decisions: [],
+    important_files: [],
+    open_questions: [],
+  });
+
+  assert.match(page, /class="math-inline"/);
+  assert.match(page, /class="math-display"/);
+  assert.match(page, /<math[^>]*display="block"/);
+  assert.match(page, /<mfrac>/);
+  assert.match(page, /<msub>/);
+  assert.match(page, /<msup>/);
+  assert.match(page, /<code>\$not_math\$<\/code>/);
+  assert.doesNotMatch(page, /<script/);
+});
+
+test("invalid or unsafe LaTeX falls back to escaped source", () => {
+  const page = renderHTML({
+    id: "abcdefghijklmnopqrstuv",
+    title: "Safe math",
+    goal: "Safe math",
+    intent: "share",
+  }, {
+    intent: "share",
+    human_sections: [{ title: "公式", body: String.raw`$\href{javascript:alert(1)}{x}$ and $\frac{1}{$` }],
+    context: "",
+    decisions: [],
+    important_files: [],
+    open_questions: [],
+  });
+
+  assert.match(page, /class="math-source"/);
+  assert.doesNotMatch(page, /href="javascript:/);
+  assert.doesNotMatch(page, /<script/);
+});
+
 test("long goals get a compact display title without losing the Agent goal", async () => {
   const request = publishRequest();
   const body = await request.json();

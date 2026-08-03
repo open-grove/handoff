@@ -125,6 +125,8 @@ handoff doctor
 
 两种意图都保留 `For Human / For Agent` 两层：浏览器分享页会完整展示人类内容，把 Agent 内容默认收起。使用 `--attach-context` 时，完整 Context 仍通过独立接口按需获取。
 
+分享页支持 LaTeX 公式定界符 `$...$`、`$$...$$`、`\(...\)` 和 `\[...\]`，服务端会将它们转成原生 MathML。反引号行内代码和 fenced code block 中的同类文字保持原样；无法解析的公式会安全回退为原始文本。
+
 通过 Agent 调用 Handoff 时，Agent 应先从当前对话判断传递目的、范围和重点。只有缺失信息会实质改变成品时才追问，例如“是让接收方继续工作，还是理解讨论结果”、“哪一段对话应被排除”。这不是固定问卷；已能从对话推断的内容不会再问，每次只问最少、最有用的问题。
 
 ## CLI
@@ -248,8 +250,13 @@ ssh root@your-ecs 'chmod 600 /etc/handoff/handoff.env && systemctl daemon-reload
 
 ```bash
 make test
+make test-worker
 make build
 ./bin/handoff --help
 ```
+
+Cloudflare Worker 首次开发或依赖变更后先运行 `npm ci --prefix cloudflare`。发布前可用
+`(cd cloudflare && npx wrangler deploy --dry-run)` 验证打包；确认 Cloudflare 凭据和 D1 绑定后，运行
+`npm run deploy --prefix cloudflare` 部署线上分享页。
 
 当前是最小闭环。本版不做组织成员、权限系统、群聊、原生 Session 恢复或并发编辑。
