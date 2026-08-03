@@ -288,10 +288,14 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 	if len(available) != 1 || available[0].Name != "handoff" {
 		t.Fatalf("unexpected embedded skills: %#v", available)
 	}
-	const description = "description: Package current work into a portable, immutable Handoff so another person or Agent can continue it"
+	const description = "description: Package a discussion result or current work into a portable, immutable Handoff"
 	content, ok := skillbundle.Read("handoff")
 	if !ok || !strings.Contains(content, "name: handoff") ||
 		!strings.Contains(content, description) ||
+		!strings.Contains(content, "--intent share") ||
+		!strings.Contains(content, "--intent continue") ||
+		!strings.Contains(content, "Ask the smallest context-specific clarification") ||
+		!strings.Contains(content, "Do not turn this into a fixed questionnaire") ||
 		!strings.Contains(content, "--generator cloud") ||
 		!strings.Contains(content, "--attach-context") ||
 		!strings.Contains(content, "handoff context <reference>") ||
@@ -303,7 +307,7 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 	metadata, ok := skillbundle.OpenAIYAML("handoff")
 	if !ok ||
 		!strings.Contains(metadata, `display_name: "OpenGrove Handoff"`) ||
-		!strings.Contains(metadata, "package current work for someone else to continue") {
+		!strings.Contains(metadata, "share a discussion's conclusions and reasoning") {
 		t.Fatalf("embedded Skill metadata is incomplete: ok=%v content=%q", ok, metadata)
 	}
 }

@@ -17,7 +17,7 @@ import (
 
 type previewCompactor struct{}
 
-func (previewCompactor) Compact(_ context.Context, _ string, _ types.Context) (types.Sections, error) {
+func (previewCompactor) Compact(_ context.Context, _, _ string, _ types.Context) (types.Sections, error) {
 	return types.Sections{Context: "review me", CurrentState: "ready", NextSteps: []string{"continue"}}, nil
 }
 

@@ -3,7 +3,7 @@ package types
 import "time"
 
 const (
-	ProtocolVersion          = 4
+	ProtocolVersion          = 6
 	ContextAttachmentVersion = 1
 	RedactionVersion         = "best-effort-v1"
 )
@@ -82,6 +82,7 @@ type ContextResponse struct {
 // context. It is an explicit opt-in path; the CLI normally uses the current
 // Agent and publishes only Sections.
 type CompactRequest struct {
+	Intent     string  `json:"intent,omitempty"`
 	Goal       string  `json:"goal"`
 	Context    Context `json:"context"`
 	TTLSeconds int64   `json:"ttl_seconds,omitempty"`
@@ -96,15 +97,30 @@ type CompactPreviewResponse struct {
 }
 
 type Sections struct {
-	HumanBackground string   `json:"human_background,omitempty"`
-	HumanStatus     string   `json:"human_status,omitempty"`
-	HumanTodos      []string `json:"human_todos,omitempty"`
+	Intent          string         `json:"intent,omitempty"`
+	HumanBackground string         `json:"human_background,omitempty"`
+	HumanStatus     string         `json:"human_status,omitempty"`
+	HumanTodos      []string       `json:"human_todos,omitempty"`
+	HumanSummary    string         `json:"human_summary,omitempty"`
+	HumanSections   []HumanSection `json:"human_sections,omitempty"`
+	// The fields below are accepted for protocol-v5 compatibility. New share
+	// generators should integrate this material into HumanSections instead.
+	KeyConclusions  []string `json:"key_conclusions,omitempty"`
+	Reasoning       []string `json:"reasoning,omitempty"`
+	Examples        []string `json:"examples,omitempty"`
+	Corrections     []string `json:"corrections,omitempty"`
+	RejectedOptions []string `json:"rejected_options,omitempty"`
 	Context         string   `json:"context"`
 	Decisions       []string `json:"decisions"`
 	CurrentState    string   `json:"current_state"`
 	ImportantFiles  []string `json:"important_files"`
 	NextSteps       []string `json:"next_steps"`
 	OpenQuestions   []string `json:"open_questions"`
+}
+
+type HumanSection struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 
 type SourceRef struct {
@@ -129,6 +145,7 @@ type Handoff struct {
 	Version   int          `json:"version"`
 	ID        string       `json:"id"`
 	Title     string       `json:"title,omitempty"`
+	Intent    string       `json:"intent,omitempty"`
 	Goal      string       `json:"goal"`
 	Source    SourceRef    `json:"source"`
 	Markdown  string       `json:"markdown"`

@@ -1,4 +1,4 @@
 interface:
   display_name: "OpenGrove Handoff"
-  short_description: "Share Agent context across people, tools, and sessions"
-  default_prompt: "Use $handoff to package current work for someone else to continue, or to receive and manage an existing Handoff."
+  short_description: "Share discussion results or transfer Agent work"
+  default_prompt: "Use $handoff to share a discussion's conclusions and reasoning, package current work for someone else to continue, or receive and manage an existing Handoff."

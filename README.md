@@ -34,6 +34,12 @@ handoff skills install
 # 自动找当前工作区最近的 Codex / Claude / Pi Session
 handoff create "让同事继续完成 CLI 部署"
 
+# 分享讨论成果：保留结论、推理、例子和被纠正的误解，不强行生成待办
+handoff create "MCP App 架构讨论" --intent share
+
+# 交接未完成工作：强调当前状态和下一步
+handoff create "继续完成 MCP App 兼容性修复" --intent continue
+
 # 创建成功后输出一份 Markdown 消息，可直接粘贴到飞书、Slack 或聊天窗口：
 #
 # 🖐️ **For Human**
@@ -110,20 +116,22 @@ handoff doctor
 
 `handoff skills read handoff` 输出与当前 CLI 二进制同版本的 Agent Skill，采用与 lark-cli 相同的内嵌 Skill 思路，避免单独分发的说明与命令行为漂移。`handoff skills install` 默认把 `SKILL.md` 和 `agents/openai.yaml` 安装到 Codex、Claude Code 和通用 Agent 目录；已有不同内容时必须显式使用 `--force`。`handoff update` 会同步未修改的旧 Skill，检测到自定义内容时会保留并提示。
 
-## 一个文件，两层信息
+## 两种意图，一个文件
 
-新生成的 `HANDOFF.md` 是一份不可变快照，但明确分成两部分：
+新生成的 `HANDOFF.md` 是一份不可变快照。`--intent auto` 是默认值，Agent 会根据对话判断；也可显式选择：
 
-- `For Human`：用人话说清项目背景、当前情况和待办事项。默认简短，不堆文件路径、Session 元数据和实现细节。
-- `For Agent`：保留 Goal、Context、Decisions、Current State、Important Files、Next Steps 和 Open Questions，并在最后明确提醒接收 Agent：先用清晰易懂的话介绍当前背景，再询问用户下一步要怎么做，不能把交接里的 Next Steps 当成执行授权。
+- `share`：传递“这次讨论最后弄明白了什么”。`For Human` 是主体，Agent 会根据这次讨论自由选择文章结构和章节标题。同一主题的结论、理由、例子、纠错和取舍会放在一起，不再按“关键结论 / 为什么 / 例子”强行分桶，也不会把问题改写成待办。`For Agent` 只作技术附录。
+- `continue`：传递“接下来谁要继续做什么”。`For Human` 说明背景、当前情况和待办；`For Agent` 保留 Goal、Context、Decisions、Current State、Important Files、Next Steps 和 Open Questions。
 
-浏览器分享页会先展示 `For Human`，并把 `For Agent` 默认收起；原始 `.md` 仍可直接打开或交给 Agent 读取。使用 `--attach-context` 时，交接卡只加入可用性和读取命令，完整 Context 通过独立接口按需获取，不会塞进默认页面或 `receive` 响应。
+两种意图都保留 `For Human / For Agent` 两层：浏览器分享页会完整展示人类内容，把 Agent 内容默认收起。使用 `--attach-context` 时，完整 Context 仍通过独立接口按需获取。
+
+通过 Agent 调用 Handoff 时，Agent 应先从当前对话判断传递目的、范围和重点。只有缺失信息会实质改变成品时才追问，例如“是让接收方继续工作，还是理解讨论结果”、“哪一段对话应被排除”。这不是固定问卷；已能从对话推断的内容不会再问，每次只问最少、最有用的问题。
 
 ## CLI
 
 | 命令 | 风险 | 作用 |
 |---|---:|---|
-| `handoff create "goal"` | write | 只读上下文，由当前 Agent 生成，默认只上传 sections |
+| `handoff create "topic or goal"` | write | 只读上下文，由当前 Agent 生成；`--intent share|continue` 控制是分享结果还是交接任务 |
 | `handoff session locate` | read | 返回仅限同机使用的原始 provider Session 路径 |
 | `handoff receive <reference>` | read | 接受 `opengrove-handoff:<code>`、旧分享码、人类页面或 `.md` URL |
 | `handoff context <reference>` | read | 读取创建时显式附带的完整脱敏可读 Context |
@@ -140,7 +148,7 @@ handoff doctor
 
 `create --json` 额外返回 `agent_reference`、`share_message` 和 `fallback_used`。Agent 生成失败并退回确定性提取时，`fallback_used` 为 `true`，同时返回脱敏后的 `generation_warning`。稳定引用格式为 `opengrove-handoff:<code>`；调用 Handoff 的 Agent 应原样转发 `share_message`，不能自行改成列表、重命名链接或改写安装提示。文本模式直接输出同一份标准分享消息。
 
-传给 `handoff create` 的目标应是短任务名，不要把进展说明和需求列表都塞进标题。服务端还会从第一个完整分句生成独立 `title`，并限制为最多 64 个视觉列（约 32 个汉字或 64 个英文字符）；完整目标仍保留在 `For Agent / Goal`，不会因页面标题变短而丢失。
+传给 `handoff create` 的位置参数应是短主题（`share`）或短任务目标（`continue`），不要把整段进展说明塞进标题。服务端还会从第一个完整分句生成独立 `title`，并限制为最多 64 个视觉列（约 32 个汉字或 64 个英文字符）；完整主题或目标仍保留在 Agent 层。
 
 每次匿名发布都会生成一枚独立删除凭证。服务端只存储 SHA-256 哈希，CLI 把原始凭证写入本机权限为 `0600` 的 `ownership.json`，不会打印到分享消息或 `--json` 输出。创建者可直接运行 `handoff delete <code> --yes`；旧分享或其他人创建的分享仍需管理员凭据。
 

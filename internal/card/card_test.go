@@ -55,7 +55,7 @@ func TestFallbackSectionsKeepsSummaryAndCompleteHistory(t *testing.T) {
 	for index := 0; index < 10; index++ {
 		messages = append(messages, types.Message{Role: "user", Text: strings.Repeat("x", 2_100) + string(rune('A'+index))})
 	}
-	result := FallbackSections("continue", types.Context{
+	result := FallbackSections(IntentContinue, "continue", types.Context{
 		Source:   "codex",
 		Summary:  "auxiliary summary",
 		Messages: messages,
@@ -101,7 +101,7 @@ func TestContextAttachmentOmitsProviderLocalIdentifiers(t *testing.T) {
 
 func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 	now := time.Date(2026, 7, 22, 8, 0, 0, 0, time.UTC)
-	handoff, err := Build(context.Background(), nil, "abcdefghijklmnopqrstuv", "continue the CLI", types.Context{
+	handoff, err := Build(context.Background(), nil, "abcdefghijklmnopqrstuv", IntentContinue, "continue the CLI", types.Context{
 		Source:   "stdin",
 		Cursor:   "input:1",
 		Messages: []types.Message{{Role: "user", Text: "The parser is complete."}},
@@ -118,12 +118,74 @@ func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 			t.Fatalf("handoff missing %s", heading)
 		}
 	}
-	if !strings.Contains(handoff.Markdown, "version: 4") || !strings.Contains(handoff.Markdown, "continue the CLI") {
+	if !strings.Contains(handoff.Markdown, "version: 6") || !strings.Contains(handoff.Markdown, "continue the CLI") {
 		t.Fatalf("unexpected handoff:\n%s", handoff.Markdown)
 	}
 	receiverInstruction := "> 这是一份被传递的 Handoff。请先用清晰易懂的话向用户简单介绍当前背景，然后询问用户下一步要怎么做。\n"
 	if !strings.HasSuffix(handoff.Markdown, receiverInstruction) {
 		t.Fatalf("handoff does not end with the receiver instruction:\n%s", handoff.Markdown)
+	}
+}
+
+func TestShareHandoffPrioritizesDiscussionResults(t *testing.T) {
+	now := time.Date(2026, 8, 3, 8, 0, 0, 0, time.UTC)
+	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", "MCP App 架构讨论", types.SourceRef{Kind: "codex"}, Sections{
+		Intent: IntentShare,
+		HumanSections: []types.HumanSection{
+			{Title: "先把三个东西分清楚", Body: "MCP App 主要规定 App 与宿主如何通信，并不等于 App 本体。"},
+			{Title: "故事种子具体怎么通信", Body: "隔离运行的 App 无法直接调用宿主函数。故事种子通过 `command.run` 取数，通过 `openLink` 打开签约页。"},
+			{Title: "为什么不搬回宿主", Body: "把业务 UI 搬回宿主会重新引入发版耦合，所以保留独立 View。"},
+		},
+		Context:        "作品管理 UI 是 protocol: mcp-app 的 view。",
+		Decisions:      []string{"保留 MCP App 通信通道。"},
+		ImportantFiles: []string{"internal/card/card.go"},
+		OpenQuestions:  []string{"未来是否需要官方 App 信任分级？"},
+	}, "agent:codex", now, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handoff.Intent != IntentShare || !strings.Contains(handoff.Markdown, `intent: "share"`) {
+		t.Fatalf("share intent is missing: %#v\n%s", handoff, handoff.Markdown)
+	}
+	for _, expected := range []string{"先把三个东西分清楚", "故事种子具体怎么通信", "为什么不搬回宿主", "MCP App 主要规定"} {
+		if !strings.Contains(handoff.Markdown, expected) {
+			t.Fatalf("share handoff missing %q:\n%s", expected, handoff.Markdown)
+		}
+	}
+	for _, genericHeading := range []string{"关键结论", "为什么会得出这些结论", "帮助理解的例子", "讨论中纠正的误解"} {
+		if strings.Contains(handoff.Markdown, "### "+genericHeading) {
+			t.Fatalf("share handoff still uses generic bucket %q:\n%s", genericHeading, handoff.Markdown)
+		}
+	}
+	for _, taskHeading := range []string{"### 待办事项", "### Current State", "### Next Steps"} {
+		if strings.Contains(handoff.Markdown, taskHeading) {
+			t.Fatalf("share handoff contains task section %q:\n%s", taskHeading, handoff.Markdown)
+		}
+	}
+	if !strings.HasSuffix(handoff.Markdown, "> 这是一份讨论成果分享。请准确保留它的结论与推理；除非用户明确要求，不要把其中的问题自动改写成待办事项。\n") {
+		t.Fatalf("unexpected receiver instruction:\n%s", handoff.Markdown)
+	}
+	page := HTML(handoff)
+	for _, expected := range []string{"讨论成果", "技术附录", "MCP App 主要规定"} {
+		if !strings.Contains(page, expected) {
+			t.Fatalf("share page missing %q: %s", expected, page)
+		}
+	}
+}
+
+func TestLegacyShareBucketsRemainPublishable(t *testing.T) {
+	now := time.Now().UTC()
+	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", "legacy share", types.SourceRef{Kind: "codex"}, Sections{
+		Intent: IntentShare, HumanBackground: "Background", HumanSummary: "Summary",
+		KeyConclusions: []string{"Conclusion"}, Reasoning: []string{"Reason"}, Context: "Technical",
+	}, "agent:legacy", now, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"### 我们讨论了什么", "### 讨论结果", "### 关键结论", "### 为什么会得出这些结论"} {
+		if !strings.Contains(handoff.Markdown, expected) {
+			t.Fatalf("legacy share did not migrate %q:\n%s", expected, handoff.Markdown)
+		}
 	}
 }
 
@@ -258,6 +320,32 @@ func TestParseReviewedMarkdownRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseReviewedShareMarkdownRoundTrip(t *testing.T) {
+	now := time.Now().UTC()
+	draft := types.Handoff{
+		Version: types.ProtocolVersion, ID: "review-draft", Goal: "share discussion", Intent: IntentShare,
+		Source: types.SourceRef{Kind: "codex"}, Generator: "agent:codex",
+		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	markdown := RenderReviewDraft(draft, Sections{
+		Intent: IntentShare,
+		HumanSections: []types.HumanSection{
+			{Title: "Understand C# and [views]", Body: "Summary with reason and example."},
+			{Title: "Why this choice", Body: "Decision explanation."},
+		},
+		Context:   "Technical",
+		Decisions: []string{"Decision"}, ImportantFiles: []string{"README.md"}, OpenQuestions: []string{"Question?"},
+	})
+	markdown = strings.Replace(markdown, "Summary with reason and example.", "Reviewed summary with reason and example.", 1)
+	sections, err := ParseReviewedMarkdown(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sections.Intent != IntentShare || len(sections.HumanSections) != 2 || sections.HumanSections[0].Title != "Understand C# and [views]" || sections.HumanSections[0].Body != "Reviewed summary with reason and example." || sections.CurrentState != "" || len(sections.NextSteps) != 0 {
+		t.Fatalf("unexpected reviewed share sections: %#v", sections)
+	}
+}
+
 func TestMarkdownTitleEscapesFormattingWithoutDroppingText(t *testing.T) {
 	if got := markdownTitle("Continue C# and [docs]"); got != `Continue C\# and \[docs\]` {
 		t.Fatalf("markdown title = %q", got)
@@ -284,20 +372,20 @@ func TestHTMLRendersMarkdownWithoutRawHTML(t *testing.T) {
 
 type invalidCompactor struct{}
 
-func (invalidCompactor) Compact(context.Context, string, types.Context) (Sections, error) {
+func (invalidCompactor) Compact(context.Context, string, string, types.Context) (Sections, error) {
 	return Sections{Context: "only context"}, nil
 }
 
 type namedCompactor struct{}
 
-func (namedCompactor) Compact(context.Context, string, types.Context) (Sections, error) {
+func (namedCompactor) Compact(context.Context, string, string, types.Context) (Sections, error) {
 	return Sections{Context: "Known", CurrentState: "Ready", NextSteps: []string{"Continue"}}, nil
 }
 func (namedCompactor) Generator() string { return "server:agent-plan" }
 
 func TestBuildUsesNamedCompactorGenerator(t *testing.T) {
 	now := time.Now().UTC()
-	handoff, err := Build(context.Background(), namedCompactor{}, "abcdefghijklmnopqrstuv", "continue", types.Context{
+	handoff, err := Build(context.Background(), namedCompactor{}, "abcdefghijklmnopqrstuv", IntentContinue, "continue", types.Context{
 		Source: "stdin", Messages: []types.Message{{Role: "user", Text: "known state"}},
 	}, now, now.Add(time.Hour))
 	if err != nil {
@@ -310,7 +398,7 @@ func TestBuildUsesNamedCompactorGenerator(t *testing.T) {
 
 func TestBuildFallsBackWhenModelContractIsIncomplete(t *testing.T) {
 	now := time.Now().UTC()
-	handoff, err := Build(context.Background(), invalidCompactor{}, "abcdefghijklmnopqrstuv", "continue", types.Context{
+	handoff, err := Build(context.Background(), invalidCompactor{}, "abcdefghijklmnopqrstuv", IntentContinue, "continue", types.Context{
 		Source:   "stdin",
 		Messages: []types.Message{{Role: "user", Text: "known state"}},
 	}, now, now.Add(time.Hour))
@@ -348,7 +436,7 @@ func TestAgentPlanCompactorUsesAnthropicCompatibleContract(t *testing.T) {
 	defer server.Close()
 
 	compactor := AgentPlanCompactor{BaseURL: server.URL, APIKey: "secret", Model: "model-1", Client: server.Client()}
-	sections, err := compactor.Compact(context.Background(), "Continue", types.Context{Source: "stdin", Messages: []types.Message{{Role: "user", Text: "Ready"}}})
+	sections, err := compactor.Compact(context.Background(), IntentContinue, "Continue", types.Context{Source: "stdin", Messages: []types.Message{{Role: "user", Text: "Ready"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

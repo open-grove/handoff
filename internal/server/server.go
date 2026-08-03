@@ -234,7 +234,7 @@ func (api *API) createSchema(response http.ResponseWriter, _ *http.Request) {
 		"risk":     "write",
 		"auth":     "none",
 		"required": []string{"goal", "source.kind", "sections", "generator"},
-		"optional": []string{"context_attachment"},
+		"optional": []string{"sections.intent", "context_attachment"},
 		"privacy":  "publishing is anonymous; context_attachment is persisted only when explicitly supplied and is re-sanitized by the service",
 		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
 	})
@@ -247,6 +247,7 @@ func (api *API) compactSchema(response http.ResponseWriter, _ *http.Request) {
 		"risk":     "write",
 		"auth":     "OpenGrove access token",
 		"required": []string{"goal", "context.source", "context.summary or context.messages"},
+		"optional": []string{"intent: auto|share|continue"},
 		"privacy":  "cloud generation temporarily processes canonical sanitized readable context; it is not stored by this endpoint",
 		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
 	})
@@ -312,8 +313,9 @@ func (api *API) compact(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	input.Goal = card.SanitizeGoal(input.Goal)
+	input.Intent = card.SanitizeIntent(input.Intent)
 	input.Context = card.SanitizeContext(input.Context)
-	if input.Goal == "" || input.Context.Source == "" || !hasContext(input.Context) {
+	if input.Intent == "" || input.Goal == "" || input.Context.Source == "" || !hasContext(input.Context) {
 		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "goal, context.source, and context summary or messages are required"})
 		return
 	}
@@ -328,7 +330,7 @@ func (api *API) compact(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	handoff, compactError := card.Build(request.Context(), api.Compactor, id, input.Goal, input.Context, now, now.Add(ttl))
+	handoff, compactError := card.Build(request.Context(), api.Compactor, id, input.Intent, input.Goal, input.Context, now, now.Add(ttl))
 	if compactError != nil {
 		api.logger().Warn("model generation unavailable; using deterministic handoff", "error", compactError)
 	}
@@ -352,12 +354,13 @@ func (api *API) compactPreview(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	input.Goal = card.SanitizeGoal(input.Goal)
+	input.Intent = card.SanitizeIntent(input.Intent)
 	input.Context = card.SanitizeContext(input.Context)
-	if input.Goal == "" || input.Context.Source == "" || !hasContext(input.Context) {
+	if input.Intent == "" || input.Goal == "" || input.Context.Source == "" || !hasContext(input.Context) {
 		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "goal, context.source, and context summary or messages are required"})
 		return
 	}
-	sections, generator, compactError := card.GenerateSections(request.Context(), api.Compactor, input.Goal, input.Context)
+	sections, generator, compactError := card.GenerateSections(request.Context(), api.Compactor, input.Intent, input.Goal, input.Context)
 	warning := ""
 	if api.Compactor == nil {
 		warning = "server compactor is not configured; deterministic sections were used"

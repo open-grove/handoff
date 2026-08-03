@@ -41,8 +41,9 @@ var embeddedHandoffURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+(?::[0-9]+)?/
 const usage = `handoff — portable context for people and agents.
 
 AGENT QUICKSTART:
-  handoff create "next goal"                 Use this workspace's active Agent session when available
-  agent-export | handoff create "next goal"  Create from stdin
+  handoff create "discussion topic" --intent share
+  handoff create "next goal" --intent continue
+  agent-export | handoff create "topic or goal"
   handoff create "next goal" --generator cloud
   handoff create "next goal" --attach-context
   handoff session locate                     Return the same-machine Session path
@@ -88,9 +89,10 @@ Generators:
 const createUsage = `Generate and publish an immutable handoff.
 
 Usage:
-  handoff create "next goal" [flags]
+  handoff create "topic or next goal" [flags]
 
 Preferred flags:
+  --intent auto|share|continue            Artifact intent (default: auto)
   --generator agent|deterministic|cloud   Generation strategy (default: agent)
   --source auto|codex|claude|pi           Context source (default: auto)
   --runtime auto|codex|claude|pi          Agent runtime; never selects a model
@@ -273,6 +275,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	flags.SetOutput(os.Stderr)
 	flags.Usage = func() { fmt.Fprint(os.Stdout, createUsage) }
 	sourceName := flags.String("source", "auto", "context source: auto, codex, claude, or pi")
+	intentName := flags.String("intent", "auto", "artifact intent: auto, share, or continue")
 	generatorName := flags.String("generator", "agent", "generator: agent, deterministic, or cloud")
 	runtimeName := flags.String("runtime", "auto", "Agent runtime: auto, codex, claude, or pi (never selects a model)")
 	attachContext := flags.Bool("attach-context", false, "store full sanitized readable context beside the handoff")
@@ -303,7 +306,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		goalArgument = flags.Args()[0]
 	}
 	if strings.TrimSpace(goalArgument) == "" || len(flags.Args()) > 0 {
-		return errors.New("usage: handoff create \"next goal\" [--source auto|codex|claude|pi] [--generator agent|deterministic|cloud]")
+		return errors.New("usage: handoff create \"topic or next goal\" [--intent auto|share|continue] [--source auto|codex|claude|pi]")
 	}
 	setFlags := map[string]bool{}
 	flags.Visit(func(item *flag.Flag) { setFlags[item.Name] = true })
@@ -330,6 +333,10 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		return errors.New("session mode only prints a local path and cannot be combined with --review, --output, or --force")
 	}
 	goal := card.SanitizeGoal(goalArgument)
+	intent := card.SanitizeIntent(*intentName)
+	if intent == "" {
+		return errors.New("--intent must be auto, share, or continue")
+	}
 	var readStdin bool
 	var stdinReader io.Reader
 	if !selection.SessionPath {
@@ -367,7 +374,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	}
 	serverRequestBytes := 0
 	if selection.Generator == "cloud" {
-		encoded, encodeErr := json.Marshal(types.CompactRequest{Goal: goal, Context: contextSource})
+		encoded, encodeErr := json.Marshal(types.CompactRequest{Intent: intent, Goal: goal, Context: contextSource})
 		if encodeErr != nil {
 			return encodeErr
 		}
@@ -387,6 +394,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		}
 		return printJSON(map[string]any{
 			"dry_run":                  true,
+			"intent":                   intent,
 			"goal":                     goal,
 			"source":                   contextSource.Source,
 			"session_id":               contextSource.SessionID,
@@ -417,7 +425,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	apiClient := client.Client{Server: profile.Server}
-	sections := card.FallbackSections(goal, contextSource)
+	sections := card.FallbackSections(intent, goal, contextSource)
 	generator := "deterministic"
 	var generationWarning error
 	switch selection.Generator {
@@ -426,7 +434,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		runtime, resolveErr := runner.Resolve(selection.Runtime, contextSource.Source)
 		if resolveErr != nil {
 			generationWarning = resolveErr
-		} else if generated, generateErr := runner.Generate(ctx, runtime, goal, contextSource); generateErr != nil {
+		} else if generated, generateErr := runner.Generate(ctx, runtime, intent, goal, contextSource); generateErr != nil {
 			generationWarning = generateErr
 		} else {
 			sections = generated
@@ -439,7 +447,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		}
 		compactionClient := client.Client{Server: profile.Server, Token: accessToken}
 		preview, previewErr := compactionClient.PreviewServerCompaction(ctx, types.CompactRequest{
-			Goal: goal, Context: contextSource,
+			Intent: intent, Goal: goal, Context: contextSource,
 		})
 		if previewErr != nil {
 			return previewErr
@@ -776,7 +784,7 @@ func formatLocalSessionMessage(goal, sourceKind, sessionPath string) string {
 func reviewSections(ctx context.Context, goal string, sourceContext types.Context, sections types.Sections, generator string, ttl time.Duration) (types.Sections, error) {
 	now := time.Now().UTC()
 	draft := types.Handoff{
-		Version: types.ProtocolVersion, ID: "review-draft", Goal: goal,
+		Version: types.ProtocolVersion, ID: "review-draft", Goal: goal, Intent: sections.Intent,
 		Source: types.SourceRef{
 			Kind: sourceContext.Source, SessionID: sourceContext.SessionID,
 			Cursor: sourceContext.Cursor, UpdatedAt: sourceContext.UpdatedAt,
@@ -1431,7 +1439,8 @@ func schemaContract(command string) (map[string]any, error) {
 			"inputSchema": map[string]any{
 				"type": "object", "required": []string{"goal"}, "additionalProperties": false,
 				"properties": map[string]any{
-					"goal":           stringProperty("Short next goal for the receiver; the complete value remains in the Agent section."),
+					"goal":           stringProperty("Short topic for share intent or next goal for continue intent."),
+					"intent":         map[string]any{"type": "string", "enum": []string{"auto", "share", "continue"}, "default": "auto", "description": "Choose a discussion-result share or resumable task handoff."},
 					"source":         map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto"},
 					"generator":      map[string]any{"type": "string", "enum": []string{"agent", "deterministic", "cloud"}, "default": "agent"},
 					"runtime":        map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto", "description": "Selects an Agent runtime, never a model."},

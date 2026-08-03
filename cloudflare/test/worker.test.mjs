@@ -126,6 +126,58 @@ test("publish, read, render, and delete a handoff", async () => {
   assert.equal(db.records.size, 0);
 });
 
+test("share handoffs preserve conclusions without inventing task sections", async () => {
+  const request = new Request("https://handoff.example/v1/handoffs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      goal: "MCP App 架构讨论",
+      source: { kind: "codex" },
+      generator: "agent:codex",
+      sections: {
+        intent: "share",
+        human_background: "",
+        human_status: "这个状态应被清空。",
+        human_todos: ["这个待办应被清空。"],
+        human_sections: [
+          { title: "先把三个东西分清楚", body: "MCP App 规定 App 与宿主如何通信，并不等于 App 本体。" },
+          { title: "故事种子怎么通信", body: "隔离 App 无法直接调用宿主函数，所以使用 command.run 和 openLink。" },
+          { title: "为什么不搬回宿主", body: "搬回宿主会重新引入发版耦合。" },
+        ],
+        context: "work-management view uses protocol: mcp-app.",
+        decisions: ["保留 MCP App 通信通道。"],
+        current_state: "这个状态应被清空。",
+        important_files: ["cloudflare/src/index.mjs"],
+        next_steps: ["这个下一步应被清空。"],
+        open_questions: ["是否需要官方 App 信任分级？"],
+      },
+    }),
+  });
+  const response = await route(request, { HANDOFF_DB: fakeDB() });
+  assert.equal(response.status, 201);
+  const created = await response.json();
+  assert.equal(created.handoff.version, 6);
+  assert.equal(created.handoff.intent, "share");
+  assert.match(created.handoff.markdown, /intent: "share"/);
+  assert.match(created.handoff.markdown, /### 先把三个东西分清楚/);
+  assert.match(created.handoff.markdown, /### 故事种子怎么通信/);
+  assert.doesNotMatch(created.handoff.markdown, /### 关键结论|### 为什么会得出这些结论|### 帮助理解的例子/);
+  assert.doesNotMatch(created.handoff.markdown, /### 待办事项|### Current State|### Next Steps/);
+  assert.match(created.handoff.markdown, /> 这是一份讨论成果分享。/);
+  const page = renderHTML(created.handoff, {
+    intent: "share",
+    human_sections: [{ title: "先把三个东西分清楚", body: "MCP App 是通信协议。\n\n- 理由和结论放在一起\n\n```text\nView -> Host\n```" }],
+    context: "technical",
+    decisions: ["保留"],
+    important_files: [],
+    open_questions: [],
+  });
+  assert.match(page, /讨论成果/);
+  assert.match(page, /技术附录/);
+  assert.match(page, /<ul><li>理由和结论放在一起<\/li><\/ul>/);
+  assert.match(page, /<pre><code>View -&gt; Host<\/code><\/pre>/);
+});
+
 test("long goals get a compact display title without losing the Agent goal", async () => {
   const request = publishRequest();
   const body = await request.json();
@@ -227,6 +279,8 @@ test("cloud generation receives complete canonical readable context while redact
   assert.match(prompt, /BEGIN/);
   assert.match(prompt, /END/);
   assert.match(prompt, /auxiliary native compact summary/);
+  assert.match(prompt, /human_sections/);
+  assert.match(prompt, /reader's mental path/);
   assert.doesNotMatch(prompt, /alice@example\.com|203\.0\.113\.9/);
   assert.match(prompt, /\[REDACTED EMAIL\].*\[REDACTED IP\]/);
 });
