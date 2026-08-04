@@ -1,6 +1,6 @@
 # handoff
 
-`handoff` 是一个给人和 Agent 用的通用上下文交接 CLI。它不复制 Codex / Claude 的原生 Session；它把当前上下文变成一份可阅读、可追溯、模型无关的 `HANDOFF.md`。默认生成与发布无需登录，只有可选的云端生成复用本机 OpenGrove 登录。
+`handoff` 是一个给人和 Agent 用的通用上下文交接 CLI。它不复制 Codex / Claude / Pi / OpenCode 的原生 Session；它把当前上下文变成一份可阅读、可追溯、模型无关的 `HANDOFF.md`。默认生成与发布无需登录，只有可选的云端生成复用本机 OpenGrove 登录。
 
 ```text
 当前 Session（只读快照，不执行 /compact）
@@ -19,7 +19,7 @@
  handoffd 存储 / 分享 HANDOFF.md（默认只存 sections）
 ```
 
-默认不需要配置模型、API key、provider 或模型地址。比如从 Codex 中调用时，CLI 会执行一次全新的 `codex exec --ephemeral`；它沿用 Codex 已有认证与默认模型，但不会 resume、compact 或改写来源 Session。Claude Code 和 Pi 使用同样的无状态子调用思路。默认 generator 是 `agent`，不是原生 `/compact`。
+默认不需要配置模型、API key、provider 或模型地址。比如从 Codex 中调用时，CLI 会执行一次全新的 `codex exec --ephemeral`；它沿用 Codex 已有认证与默认模型，但不会 resume、compact 或改写来源 Session。Claude Code 和 Pi 使用同样的无状态子调用思路。OpenCode 会在独立临时目录创建生成 Session，并仅在目录、创建时间和 Session ID 都验证通过后删除这一枚临时 Session。默认 generator 是 `agent`，不是原生 `/compact`。
 
 ## 用起来
 
@@ -31,7 +31,7 @@ cd handoff
 # install.sh 会同时安装匹配版本的 Skill；也可以随时手动检查或修复
 handoff skills install
 
-# 自动找当前工作区最近的 Codex / Claude / Pi Session
+# 自动找当前工作区最近的 Codex / Claude / Pi / OpenCode Session
 handoff create "让同事继续完成 CLI 部署"
 
 # 分享讨论成果：保留结论、推理、例子和被纠正的误解，不强行生成待办
@@ -163,6 +163,7 @@ handoff doctor
 - Codex：`~/.codex/sessions/**/*.jsonl`
 - Claude Code：`~/.claude/projects/**/*.jsonl`
 - Pi：`~/.pi/agent/sessions/**/*.jsonl` 或 `~/.pi/sessions/**/*.jsonl`
+- OpenCode：只读调用 `opencode session list` 与 `opencode export`；在 OpenCode 内运行时通过 `OPENCODE=1` 优先选择当前工作区最近的根 Session
 - 永久可用的通用逃生口：stdin 和 `--file`
 
 CLI 总是构造同一份 Canonical Context：有效的可读 user / assistant 历史，经过规范化和尽力脱敏，不提取 thinking、原始 tool result 或 Provider 内部记录。Codex fork 只使用第一层 `session_meta` 作为自身身份；已 rollback 的回合和 aborted 回合的 assistant 输出会移除，有正式 final 时同回合 commentary 会移除，没有 final 的 commentary 会明确标为临时信息。直属子 Agent 已完成的 final 会合并回来；Claude sidechain 的可读文本会保留并标为辅助信息。若 Provider 把原生 compact summary 明文写入 Session，它会作为辅助信息保留，但不会替代、删除或截断可读消息：
@@ -170,16 +171,17 @@ CLI 总是构造同一份 Canonical Context：有效的可读 user / assistant �
 - Claude Code：识别 `isCompactSummary` 消息，同时保留前后的可读对话。
 - Pi：识别 compaction summary，同时保留全部可读对话。
 - Codex：识别 `compacted` 边界；能读取 summary 时把它作为辅助信息，不能读取时也不伪装成已复用。
+- OpenCode：只提取非 synthetic 的 `text` part；排除 reasoning、tool、patch、snapshot、文件数据和中止输出，并把已完成的 compaction summary 作为辅助信息。
 
 `handoff create ... --dry-run` 会显示消息数、字符数、`native_compact_found`、是否存在辅助 summary，以及生成阶段与发布阶段各自会发送什么。
 
-stdin 超过 4 MiB 或 Session 中出现损坏的 JSONL 记录时，CLI 会明确报错并指出边界或行号，不会把前半段当成完整上下文继续发布。确定性提取会同时保留辅助 summary 和全部已筛选消息；若最终发布体超过服务端上限，则发布会明确失败。
+stdin 超过 4 MiB、Session 中出现损坏的 JSONL 记录、OpenCode 导出不是合法 JSON 或原始导出超过 64 MiB 本地解析上限时，CLI 会明确报错，不会把前半段当成完整上下文继续发布。确定性提取会同时保留辅助 summary 和全部已筛选消息；若最终发布体超过服务端上限，则发布会明确失败。
 
 `--attach-context` 与 generator 完全独立。它把 Canonical Context 作为单独附件持久化到 Handoff 生命周期结束；默认不开启。附件不包含 thinking、tool result、Provider 内部记录、本机 Session 路径、Session ID 或 cursor。上传前会清除已知密钥、私钥、本机用户名路径、邮箱和 IP，但这是 best-effort 规则，无法保证识别自然语言里的全部个人信息。超过 4 MiB 的发布请求会明确失败，不会静默截断。Cloudflare 部署把小型交接卡放在 D1 主表，把可选完整 Context 拆成远低于 D1 单行限制的私有分块，并只经 Worker 的 capability URL 重组读取。
 
-`handoff session locate` 是另一条完全本地的路径：CLI 只输出匹配到的 Codex / Claude / Pi 原始 Session 文件绝对路径。它不调用模型、不访问 Handoff 服务，也不产生分享码；接收 Agent 必须运行在同一台机器上。原始 Session 可能含工具数据和 provider 元数据，不应发送到公开渠道。
+`handoff session locate` 是另一条完全本地的路径：CLI 只输出匹配到的 Codex / Claude / Pi 原始 Session 文件绝对路径，不调用模型、不访问 Handoff 服务，也不产生分享码；接收 Agent 必须运行在同一台机器上。OpenCode 使用数据库存储，不存在可安全交付的单 Session 文件，因此不支持这条路径；需要便携的完整可读对话时，使用 `handoff create ... --source opencode --attach-context`。原始 Session 可能含工具数据和 provider 元数据，不应发送到公开渠道。
 
-`--generator agent` 是默认值。`--runtime auto` 会优先识别正在承载命令的 Agent，其次使用 Session 来源；也可用 `--runtime codex|claude|pi` 解决特殊终端环境里的识别问题。这个参数只选择运行时，始终不选择模型。旧的 `--upload-context`、`--mode`、`--from`、`--agent`、`--include-transcript`、`--full-session`、`--stdin` 和 `--compact` 暂时只做兼容解析，不再出现在首选 schema 中；旧 `selected/full` 都不会隐式创建 Context 附件。
+`--generator agent` 是默认值。`--runtime auto` 会优先识别正在承载命令的 Agent，其次使用 Session 来源；也可用 `--runtime codex|claude|pi|opencode` 解决特殊终端环境里的识别问题。这个参数只选择运行时，始终不选择模型。旧的 `--upload-context`、`--mode`、`--from`、`--agent`、`--include-transcript`、`--full-session`、`--stdin` 和 `--compact` 暂时只做兼容解析，不再出现在首选 schema 中；旧 `selected/full` 都不会隐式创建 Context 附件。
 
 ## 隐私与故障降级
 
@@ -187,6 +189,7 @@ stdin 超过 4 MiB 或 Session 中出现损坏的 JSONL 记录时，CLI 会明�
 - `Important Files` 只保留仓库相对路径；本机绝对路径和仓库外文件会被移除。
 - 默认 `agent` 和 `deterministic` generator 下，handoffd 只收到最终 sections；只有显式 `--attach-context` 才会额外收到并持久化 Canonical Context。
 - `agent` generator 由本机当前 Agent CLI 发起。如果该 Agent 使用云模型，脱敏后的上下文仍会发送给它已配置的模型服务商，但不会另发给 handoffd 的模型。
+- OpenCode agent generator 会强制关闭 OpenCode 自动分享并拒绝工具权限；生成后仅删除经过目录、创建时间与 ID 三重校验的临时 Session，来源 Session 始终只读。
 - `cloud` generator 会把 Canonical Context 临时交给 handoffd 的模型生成 preview；该生成接口不存储原文。是否持久化仍只由独立的 `--attach-context` 决定。
 - `cloud` generator 要求本机 OpenGrove 已登录；CLI 只读取短期 access token，服务端会向 OpenGrove 账户服务校验。普通发布和接收无需登录。
 - `--review` 会在发布前打开 `$VISUAL` / `$EDITOR` 中的 Markdown；保存关闭后才上传最终 sections。服务端模式为了生成 preview，原文上传发生在 review 之前。

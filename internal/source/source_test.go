@@ -179,6 +179,121 @@ func TestParsePiKeepsReadableHistoryAndCompactSummary(t *testing.T) {
 	}
 }
 
+func TestParseOpenCodeKeepsOnlyReadableTextAndNativeSummary(t *testing.T) {
+	input := `{
+  "info":{"id":"ses_current","directory":"/work/demo","time":{"created":1785800000000,"updated":1785800100000}},
+  "messages":[
+    {"info":{"id":"msg_user","sessionID":"ses_current","role":"user","time":{"created":1785800001000}},"parts":[
+      {"type":"text","text":"design it"},
+      {"type":"text","text":"hidden system context","synthetic":true},
+      {"type":"file","filename":"secret.txt","url":"file:///secret.txt"}
+    ]},
+    {"info":{"id":"msg_tool_step","sessionID":"ses_current","parentID":"msg_user","role":"assistant","finish":"tool-calls","time":{"created":1785800002000,"completed":1785800003000}},"parts":[
+      {"type":"reasoning","text":"private chain of thought"},
+      {"type":"text","text":"I am checking."},
+      {"type":"tool","state":{"status":"completed","input":{"path":"secret"},"output":"private tool result"}}
+    ]},
+    {"info":{"id":"msg_final","sessionID":"ses_current","parentID":"msg_user","role":"assistant","finish":"stop","time":{"created":1785800004000,"completed":1785800005000}},"parts":[
+      {"type":"text","text":"Finished design."}
+    ]},
+    {"info":{"id":"msg_compact","sessionID":"ses_current","role":"user","time":{"created":1785800006000}},"parts":[
+      {"type":"compaction","auto":true}
+    ]},
+    {"info":{"id":"msg_summary","sessionID":"ses_current","parentID":"msg_compact","role":"assistant","summary":true,"finish":"stop","time":{"created":1785800007000,"completed":1785800008000}},"parts":[
+      {"type":"text","text":"Native OpenCode summary."}
+    ]},
+    {"info":{"id":"msg_error","sessionID":"ses_current","parentID":"msg_user","role":"assistant","error":{"name":"AbortedError"},"finish":"stop","time":{"created":1785800009000,"completed":1785800010000}},"parts":[
+      {"type":"text","text":"aborted response"}
+    ]}
+  ]
+}`
+	result, err := ParseOpenCode(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "ses_current" || result.CWD != "/work/demo" || len(result.Messages) != 3 {
+		t.Fatalf("unexpected OpenCode parse result: %#v", result)
+	}
+	if result.Messages[0].Text != "design it" || result.Messages[1].Text != "[Provisional assistant message; not a completed response]\nI am checking." || result.Messages[2].Text != "Finished design." {
+		t.Fatalf("unexpected readable messages: %#v", result.Messages)
+	}
+	joined := result.Messages[0].Text + result.Messages[1].Text + result.Messages[2].Text
+	for _, excluded := range []string{"hidden system context", "secret.txt", "private chain of thought", "private tool result", "aborted response"} {
+		if strings.Contains(joined, excluded) {
+			t.Fatalf("retained provider-private OpenCode content %q in %q", excluded, joined)
+		}
+	}
+	if !result.NativeCompactFound || result.Summary != "Native OpenCode summary." || result.Cursor != "msg_error" {
+		t.Fatalf("native OpenCode summary was not preserved as auxiliary context: %#v", result)
+	}
+}
+
+func TestAutoPrefersActiveOpenCodeSessionAndExportsItReadOnly(t *testing.T) {
+	home := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "calls.txt")
+	command := filepath.Join(t.TempDir(), "opencode")
+	script := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> ` + quote(record) + `
+if [ "$1" = "session" ] && [ "$2" = "list" ]; then
+  printf '%s\n' '[{"id":"ses_newer","title":"newer","updated":2000,"created":1000,"projectId":"p","directory":` + quote(workspace) + `},{"id":"ses_active","title":"active","updated":1000,"created":500,"projectId":"p","directory":` + quote(workspace) + `}]'
+  exit 0
+fi
+if [ "$1" = "export" ]; then
+  text="newer"
+  if [ "$2" = "ses_active" ]; then text="active"; fi
+  printf '{"info":{"id":"%s","directory":` + quote(workspace) + `,"time":{"created":500,"updated":1000}},"messages":[{"info":{"id":"msg","role":"user","time":{"created":600}},"parts":[{"type":"text","text":"%s"}]}]}\n' "$2" "$text"
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_THREAD_ID", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("PI_SESSION_ID", "")
+	t.Setenv("OPENCODE", "1")
+	t.Setenv("OPENCODE_SESSION_ID", "ses_active")
+	result, err := Load(Options{Kind: "auto", Home: home, CWD: workspace, NoGit: true, OpenCodeCommand: command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Source != "opencode" || result.SessionID != "ses_active" || len(result.Messages) != 1 || result.Messages[0].Text != "active" || result.SessionPath != "" {
+		t.Fatalf("selected wrong OpenCode session: %#v", result)
+	}
+	calls, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(calls), "session list") || !strings.Contains(string(calls), "export ses_active --pure") || strings.Contains(string(calls), "export ses_newer") {
+		t.Fatalf("unexpected OpenCode calls: %s", calls)
+	}
+
+	// OpenCode sets OPENCODE=1 for shell tools but does not currently expose
+	// its active Session ID. In that normal case, the newest root Session in
+	// the current workspace is the best available read-only match.
+	t.Setenv("OPENCODE_SESSION_ID", "")
+	result, err = Load(Options{Kind: "auto", Home: home, CWD: workspace, NoGit: true, OpenCodeCommand: command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != "ses_newer" || len(result.Messages) != 1 || result.Messages[0].Text != "newer" {
+		t.Fatalf("did not select newest OpenCode workspace Session: %#v", result)
+	}
+	calls, err = os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(calls), "session list --format json --max-count 200 --pure") || !strings.Contains(string(calls), "export ses_newer --pure") {
+		t.Fatalf("OpenCode fallback discovery was not used: %s", calls)
+	}
+}
+
 func TestAutoSelectsLatestMatchingWorkspace(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "")
 	home := t.TempDir()

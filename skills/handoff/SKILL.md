@@ -36,7 +36,7 @@ Ask the smallest context-specific clarification only when the missing answer wou
 
 If the user clearly asks to share conclusions, use `--intent share`. If the user clearly asks someone to resume work, use `--intent continue`. Use `--intent auto` when the distinction is immaterial or clarification is impossible in a non-interactive workflow, not as a substitute for a useful conversation with the user.
 
-The CLI constructs one canonical Context for every generator: readable user/assistant history, normalized and best-effort redacted, with thinking, raw tool results, provider-internal records, local Session paths, IDs, and cursors excluded. It prefers the exact active Agent Session when the provider exposes an ID, respects Codex final/abort/rollback events, and includes direct sub-agent final results. Provisional commentary and Claude sidechain text are explicitly labeled as supporting evidence. A readable provider-native compact summary is auxiliary evidence; it never replaces the canonical message history and the CLI never invokes native `/compact`.
+The CLI constructs one canonical Context for every generator: readable user/assistant history, normalized and best-effort redacted, with thinking, raw tool results, provider-internal records, local Session paths, IDs, and cursors excluded. It prefers the exact active Agent Session when the provider exposes an ID, respects Codex final/abort/rollback events, and includes direct sub-agent final results. Provisional commentary, incomplete OpenCode assistant messages, and Claude sidechain text are explicitly labeled as supporting evidence. OpenCode export is filtered locally to non-synthetic text parts before sanitization; reasoning, tools, patches, snapshots, and file data are discarded. A readable provider-native compact summary is auxiliary evidence; it never replaces the canonical message history and the CLI never invokes native `/compact`.
 
 Choose intent from the user's purpose, not from whether the conversation contains unresolved questions:
 
@@ -48,7 +48,7 @@ Keep the positional topic or goal short. Put the detailed discussion or work sta
 
 For `share`, let the content determine the document shape. Organize the human page around the receiver's path to understanding. Each topic should carry its own conclusion, reasoning, evidence, examples, corrections, and tradeoffs together when they are useful. Do not force separate generic buckets merely because the data exists. The technical appendix may remain structured for Agents.
 
-Use `--source codex|claude|pi` only when automatic Session discovery is wrong. Use `--runtime codex|claude|pi` only when the generating Agent runtime must be overridden; it never selects a model. Piped stdin and repeatable `--file` values are the generic context inputs.
+Use `--source codex|claude|pi|opencode` only when automatic Session discovery is wrong. Use `--runtime codex|claude|pi|opencode` only when the generating Agent runtime must be overridden; it never selects a model. Piped stdin and repeatable `--file` values are the generic context inputs.
 
 Use `--dry-run` to inspect source and upload behavior without invoking an Agent or writing to the network. Use `--review` when the user wants to edit the generated Markdown before publishing.
 
@@ -77,7 +77,7 @@ opengrove-handoff:<code>
 
 ## Locate a Local Session
 
-Use `handoff session locate` only for another Agent on the same machine. Relay its output verbatim. The returned provider Session path is local-only; the raw file is not redacted and may contain tool data or private metadata. Never paste the path or file into a public or cross-device channel.
+Use `handoff session locate` only for another Agent on the same machine. Relay its output verbatim. The returned provider Session path is local-only; the raw file is not redacted and may contain tool data or private metadata. Never paste the path or file into a public or cross-device channel. OpenCode Sessions are database-backed and do not expose one safe raw Session file; use `handoff create ... --source opencode --attach-context` when a portable complete readable OpenCode conversation is needed.
 
 ## Receive
 

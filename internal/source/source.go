@@ -3,6 +3,7 @@ package source
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,15 +29,21 @@ type Options struct {
 	NoGit              bool
 	PreferredSource    string
 	PreferredSessionID string
+	OpenCodeCommand    string
+	SkipOpenCode       bool
 }
 
 type candidate struct {
-	kind    string
-	path    string
-	modTime time.Time
+	kind      string
+	path      string
+	sessionID string
+	cwd       string
+	modTime   time.Time
 }
 
 const maxStdinBytes = 4 << 20
+const openCodeCommandTimeout = 30 * time.Second
+const maxOpenCodeExportBytes = 64 << 20
 
 func Load(options Options) (types.Context, error) {
 	cwd := options.CWD
@@ -73,7 +80,7 @@ func Load(options Options) (types.Context, error) {
 		if preferredSessionID == "" {
 			preferredSource, preferredSessionID = activeSessionHint(options.Kind)
 		}
-		result, err = fromAgent(options.Kind, home, cwd, preferredSource, preferredSessionID)
+		result, err = fromAgent(options.Kind, home, cwd, preferredSource, preferredSessionID, options.OpenCodeCommand, options.SkipOpenCode)
 	}
 	if err != nil {
 		return types.Context{}, err
@@ -144,12 +151,12 @@ func fromFiles(paths []string, cwd string) (types.Context, error) {
 	}, nil
 }
 
-func fromAgent(kind, home, cwd, preferredSource, preferredSessionID string) (types.Context, error) {
+func fromAgent(kind, home, cwd, preferredSource, preferredSessionID, openCodeCommand string, skipOpenCode bool) (types.Context, error) {
 	if kind == "" {
 		kind = "auto"
 	}
-	if kind != "auto" && kind != "codex" && kind != "claude" && kind != "pi" {
-		return types.Context{}, fmt.Errorf("unknown source %q (use auto, codex, claude, pi, stdin, or --file)", kind)
+	if kind != "auto" && kind != "codex" && kind != "claude" && kind != "pi" && kind != "opencode" {
+		return types.Context{}, fmt.Errorf("unknown source %q (use auto, codex, claude, pi, opencode, stdin, or --file)", kind)
 	}
 
 	var candidates []candidate
@@ -162,6 +169,22 @@ func fromAgent(kind, home, cwd, preferredSource, preferredSessionID string) (typ
 	if kind == "auto" || kind == "pi" {
 		candidates = append(candidates, findCandidates("pi", filepath.Join(home, ".pi", "agent", "sessions"))...)
 		candidates = append(candidates, findCandidates("pi", filepath.Join(home, ".pi", "sessions"))...)
+	}
+	if !skipOpenCode && preferredSource == "opencode" && preferredSessionID != "" {
+		candidates = append(candidates, candidate{
+			kind:      "opencode",
+			sessionID: preferredSessionID,
+			cwd:       cwd,
+		})
+	} else if shouldDiscoverOpenCode := !skipOpenCode && (kind == "opencode" || preferredSource == "opencode" || len(candidates) == 0); shouldDiscoverOpenCode {
+		discovered, discoverErr := findOpenCodeCandidates(openCodeCommand, cwd)
+		if discoverErr != nil {
+			if kind == "opencode" || preferredSource == "opencode" {
+				return types.Context{}, discoverErr
+			}
+		} else {
+			candidates = append(candidates, discovered...)
+		}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		leftPreferred := candidateMatchesSession(candidates[i], preferredSource, preferredSessionID)
@@ -179,10 +202,13 @@ func fromAgent(kind, home, cwd, preferredSource, preferredSessionID string) (typ
 	var selected *types.Context
 	selectedRank := 100
 	for _, item := range candidates {
-		parsed, parseErr := loadCandidate(item)
+		if item.kind == "opencode" && !sameWorkspace(item.cwd, cwd) {
+			continue
+		}
+		parsed, parseErr := loadCandidate(item, openCodeCommand, firstString(item.cwd, cwd))
 		if parseErr != nil {
-			if candidateMatchesSession(item, preferredSource, preferredSessionID) || sameWorkspace(parsed.CWD, cwd) {
-				return types.Context{}, fmt.Errorf("parse Agent session %s: %w", item.path, parseErr)
+			if candidateMatchesSession(item, preferredSource, preferredSessionID) || sameWorkspace(firstString(parsed.CWD, item.cwd), cwd) {
+				return types.Context{}, fmt.Errorf("parse Agent session %s: %w", candidateDescription(item), parseErr)
 			}
 			continue
 		}
@@ -191,7 +217,9 @@ func fromAgent(kind, home, cwd, preferredSource, preferredSessionID string) (typ
 		}
 		parsed.Source = item.kind
 		parsed.SessionPath = item.path
-		parsed.UpdatedAt = item.modTime.UTC()
+		if !item.modTime.IsZero() {
+			parsed.UpdatedAt = item.modTime.UTC()
+		}
 		rank := sessionCandidateRank(parsed, item.kind, preferredSource, preferredSessionID)
 		if selected == nil || rank < selectedRank {
 			copy := parsed
@@ -223,13 +251,31 @@ func activeSessionHint(requestedKind string) (string, string) {
 		return "claude", strings.TrimSpace(os.Getenv("CLAUDE_CODE_SESSION_ID"))
 	case allowed("pi") && strings.TrimSpace(os.Getenv("PI_SESSION_ID")) != "":
 		return "pi", strings.TrimSpace(os.Getenv("PI_SESSION_ID"))
+	case allowed("opencode") && strings.TrimSpace(os.Getenv("OPENCODE")) != "":
+		return "opencode", firstString(os.Getenv("OPENCODE_SESSION_ID"), os.Getenv("OPENCODE_SESSION"))
 	default:
 		return "", ""
 	}
 }
 
 func candidateMatchesSession(item candidate, preferredSource, preferredSessionID string) bool {
-	return preferredSessionID != "" && item.kind == preferredSource && strings.Contains(filepath.Base(item.path), preferredSessionID)
+	if preferredSessionID == "" || item.kind != preferredSource {
+		return false
+	}
+	if item.sessionID != "" {
+		return item.sessionID == preferredSessionID
+	}
+	return strings.Contains(filepath.Base(item.path), preferredSessionID)
+}
+
+func candidateDescription(item candidate) string {
+	if item.path != "" {
+		return item.path
+	}
+	if item.sessionID != "" {
+		return item.kind + ":" + item.sessionID
+	}
+	return item.kind
 }
 
 func sessionCandidateRank(parsed types.Context, kind, preferredSource, preferredSessionID string) int {
@@ -248,7 +294,10 @@ func sessionCandidateRank(parsed types.Context, kind, preferredSource, preferred
 	return 4
 }
 
-func loadCandidate(item candidate) (types.Context, error) {
+func loadCandidate(item candidate, openCodeCommand, cwd string) (types.Context, error) {
+	if item.kind == "opencode" {
+		return loadOpenCodeCandidate(openCodeCommand, item.sessionID, cwd)
+	}
 	file, err := os.Open(item.path)
 	if err != nil {
 		return types.Context{}, err
@@ -262,6 +311,124 @@ func loadCandidate(item candidate) (types.Context, error) {
 	default:
 		return parsePi(file)
 	}
+}
+
+type openCodeSession struct {
+	ID        string `json:"id"`
+	Directory string `json:"directory"`
+	Updated   int64  `json:"updated"`
+	Created   int64  `json:"created"`
+}
+
+func findOpenCodeCandidates(configuredCommand, cwd string) ([]candidate, error) {
+	command, err := resolveOpenCodeCommand(configuredCommand)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), openCodeCommandTimeout)
+	defer cancel()
+	process := exec.CommandContext(ctx, command, "session", "list", "--format", "json", "--max-count", "200", "--pure")
+	process.Dir = cwd
+	var stderr bytes.Buffer
+	process.Stderr = &stderr
+	data, err := process.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("list OpenCode sessions: %w", ctx.Err())
+		}
+		return nil, fmt.Errorf("list OpenCode sessions: %w%s", err, commandErrorDetail(stderr.String()))
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, nil
+	}
+	var sessions []openCodeSession
+	if err := json.Unmarshal(data, &sessions); err != nil {
+		return nil, fmt.Errorf("parse OpenCode session list: %w", err)
+	}
+	result := make([]candidate, 0, len(sessions))
+	for _, session := range sessions {
+		if strings.TrimSpace(session.ID) == "" || strings.TrimSpace(session.Directory) == "" {
+			continue
+		}
+		result = append(result, candidate{
+			kind:      "opencode",
+			sessionID: session.ID,
+			cwd:       session.Directory,
+			modTime:   unixMillis(session.Updated),
+		})
+	}
+	return result, nil
+}
+
+func resolveOpenCodeCommand(configured string) (string, error) {
+	if value := strings.TrimSpace(configured); value != "" {
+		return value, nil
+	}
+	value, err := exec.LookPath("opencode")
+	if err != nil {
+		return "", errors.New("OpenCode CLI was not found; install OpenCode or use stdin/--file")
+	}
+	return value, nil
+}
+
+func loadOpenCodeCandidate(configuredCommand, sessionID, cwd string) (types.Context, error) {
+	command, err := resolveOpenCodeCommand(configuredCommand)
+	if err != nil {
+		return types.Context{}, err
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return types.Context{}, errors.New("OpenCode session is missing an id")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), openCodeCommandTimeout)
+	defer cancel()
+	process := exec.CommandContext(ctx, command, "export", sessionID, "--pure")
+	process.Dir = cwd
+	stdout, err := process.StdoutPipe()
+	if err != nil {
+		return types.Context{}, fmt.Errorf("export OpenCode session: %w", err)
+	}
+	var stderr bytes.Buffer
+	process.Stderr = &stderr
+	if err := process.Start(); err != nil {
+		return types.Context{}, fmt.Errorf("export OpenCode session: %w", err)
+	}
+	limited := &io.LimitedReader{R: stdout, N: maxOpenCodeExportBytes + 1}
+	parsed, parseErr := ParseOpenCode(limited)
+	if limited.N <= 0 {
+		parseErr = fmt.Errorf("OpenCode export exceeds the %d MiB local parsing limit", maxOpenCodeExportBytes>>20)
+	}
+	if parseErr != nil && process.Process != nil {
+		_ = process.Process.Kill()
+	}
+	waitErr := process.Wait()
+	if parseErr != nil {
+		return parsed, fmt.Errorf("parse OpenCode session %s: %w", sessionID, parseErr)
+	}
+	if waitErr != nil {
+		if ctx.Err() != nil {
+			return parsed, fmt.Errorf("export OpenCode session %s: %w", sessionID, ctx.Err())
+		}
+		return parsed, fmt.Errorf("export OpenCode session %s: %w%s", sessionID, waitErr, commandErrorDetail(stderr.String()))
+	}
+	return parsed, nil
+}
+
+func commandErrorDetail(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if len(value) > 500 {
+		value = value[len(value)-500:]
+	}
+	return ": " + value
+}
+
+func unixMillis(value int64) time.Time {
+	if value <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(value).UTC()
 }
 
 func findCandidates(kind, root string) []candidate {
@@ -551,6 +718,152 @@ func parsePi(reader io.Reader) (types.Context, error) {
 	return output, err
 }
 
+type openCodeExport struct {
+	Info struct {
+		ID        string `json:"id"`
+		Directory string `json:"directory"`
+		ParentID  string `json:"parentID"`
+		Time      struct {
+			Created int64 `json:"created"`
+			Updated int64 `json:"updated"`
+		} `json:"time"`
+	} `json:"info"`
+	Messages []struct {
+		Info struct {
+			ID       string          `json:"id"`
+			Role     string          `json:"role"`
+			ParentID string          `json:"parentID"`
+			Finish   string          `json:"finish"`
+			Summary  json.RawMessage `json:"summary"`
+			Error    json.RawMessage `json:"error"`
+			Time     struct {
+				Created   int64 `json:"created"`
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		} `json:"info"`
+		Parts []struct {
+			Type      string `json:"type"`
+			Text      string `json:"text"`
+			Synthetic bool   `json:"synthetic"`
+		} `json:"parts"`
+	} `json:"messages"`
+}
+
+// ParseOpenCode builds the same readable-only Context used by the JSONL
+// providers. OpenCode export contains tool inputs/results, reasoning, patches,
+// snapshots, and file data; the narrow structs below intentionally decode only
+// non-synthetic text parts and discard every other provider-native field.
+func ParseOpenCode(reader io.Reader) (types.Context, error) {
+	decoder := json.NewDecoder(reader)
+	var exported openCodeExport
+	if err := decoder.Decode(&exported); err != nil {
+		return types.Context{}, fmt.Errorf("invalid OpenCode export: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return types.Context{}, errors.New("invalid OpenCode export: multiple JSON values")
+		}
+		return types.Context{}, fmt.Errorf("invalid OpenCode export trailer: %w", err)
+	}
+
+	output := types.Context{
+		SessionID: exported.Info.ID,
+		CWD:       exported.Info.Directory,
+		UpdatedAt: unixMillis(exported.Info.Time.Updated),
+	}
+	if exported.Info.ParentID != "" {
+		output.ParentSessionID = exported.Info.ParentID
+		output.ThreadSource = "subagent"
+	}
+	compactionUsers := make(map[string]bool)
+	for _, message := range exported.Messages {
+		if message.Info.Role != "user" {
+			continue
+		}
+		for _, part := range message.Parts {
+			if part.Type == "compaction" {
+				compactionUsers[message.Info.ID] = true
+				output.NativeCompactFound = true
+				break
+			}
+		}
+	}
+
+	for _, message := range exported.Messages {
+		role := strings.TrimSpace(message.Info.Role)
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		if message.Info.ID != "" {
+			output.Cursor = message.Info.ID
+		}
+		if role == "user" && compactionUsers[message.Info.ID] {
+			continue
+		}
+		text := openCodeMessageText(message.Parts)
+		if role == "assistant" && openCodeSummary(message.Info.Summary) && compactionUsers[message.Info.ParentID] {
+			output.NativeCompactFound = true
+			if text != "" {
+				output.Summary = text
+			}
+			continue
+		}
+		if text == "" || role == "assistant" && jsonValuePresent(message.Info.Error) {
+			continue
+		}
+		parsed := types.Message{
+			Role:   role,
+			Text:   text,
+			At:     unixMillis(message.Info.Time.Created),
+			TurnID: firstString(message.Info.ParentID, message.Info.ID),
+			Owned:  true,
+		}
+		if role == "assistant" {
+			parsed.Completed = openCodeFinishCompleted(message.Info.Finish, message.Info.Time.Completed)
+			if parsed.Completed {
+				parsed.Phase = "final_answer"
+			} else {
+				parsed.Text = "[Provisional assistant message; not a completed response]\n" + parsed.Text
+			}
+		}
+		output.Messages = append(output.Messages, parsed)
+	}
+	return output, nil
+}
+
+func openCodeMessageText(parts []struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	Synthetic bool   `json:"synthetic"`
+}) string {
+	var texts []string
+	for _, part := range parts {
+		if part.Type != "text" || part.Synthetic {
+			continue
+		}
+		if text := strings.TrimSpace(part.Text); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(texts, "\n\n"))
+}
+
+func openCodeSummary(raw json.RawMessage) bool {
+	var result bool
+	return json.Unmarshal(raw, &result) == nil && result
+}
+
+func jsonValuePresent(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) && !bytes.Equal(trimmed, []byte("{}"))
+}
+
+func openCodeFinishCompleted(finish string, completedAt int64) bool {
+	finish = strings.ToLower(strings.TrimSpace(finish))
+	return completedAt > 0 && finish != "" && finish != "tool-calls" && finish != "unknown"
+}
+
 func codexCompactSummary(payload map[string]any) string {
 	if summary := firstString(payload["message"], payload["summary"]); summary != "" {
 		return summary
@@ -610,7 +923,7 @@ func mergeCodexChildFinals(primary *types.Context, candidates []candidate, cwd s
 		if childCandidate == nil {
 			continue
 		}
-		child, err := loadCandidate(*childCandidate)
+		child, err := loadCandidate(*childCandidate, "", cwd)
 		if err != nil {
 			return fmt.Errorf("parse child Agent session %s: %w", childCandidate.path, err)
 		}

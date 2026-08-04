@@ -77,7 +77,7 @@ Global flags:
   -h, --help       Show help
 
 Context sources:
-  auto (default), codex, claude, pi, piped stdin, or one or more --file values.
+  auto (default), codex, claude, pi, opencode, piped stdin, or --file values.
 
 Generators:
   agent (default) reuses the current Agent's auth, config, and default model.
@@ -94,8 +94,8 @@ Usage:
 Preferred flags:
   --intent auto|share|continue            Artifact intent (default: auto)
   --generator agent|deterministic|cloud   Generation strategy (default: agent)
-  --source auto|codex|claude|pi           Context source (default: auto)
-  --runtime auto|codex|claude|pi          Agent runtime; never selects a model
+  --source auto|codex|claude|pi|opencode  Context source (default: auto)
+  --runtime auto|codex|claude|pi|opencode Agent runtime; never selects a model
   --attach-context                        Store full sanitized readable context
   --file PATH                             Context file; repeatable
   --review                                Edit generated Markdown before publish
@@ -274,10 +274,10 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	flags := flag.NewFlagSet("handoff create", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	flags.Usage = func() { fmt.Fprint(os.Stdout, createUsage) }
-	sourceName := flags.String("source", "auto", "context source: auto, codex, claude, or pi")
+	sourceName := flags.String("source", "auto", "context source: auto, codex, claude, pi, or opencode")
 	intentName := flags.String("intent", "auto", "artifact intent: auto, share, or continue")
 	generatorName := flags.String("generator", "agent", "generator: agent, deterministic, or cloud")
-	runtimeName := flags.String("runtime", "auto", "Agent runtime: auto, codex, claude, or pi (never selects a model)")
+	runtimeName := flags.String("runtime", "auto", "Agent runtime: auto, codex, claude, pi, or opencode (never selects a model)")
 	attachContext := flags.Bool("attach-context", false, "store full sanitized readable context beside the handoff")
 	uploadContext := flags.String("upload-context", "", "deprecated cloud upload acknowledgement: selected or full")
 	legacyFrom := flags.String("from", "auto", "deprecated alias for --source")
@@ -306,7 +306,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		goalArgument = flags.Args()[0]
 	}
 	if strings.TrimSpace(goalArgument) == "" || len(flags.Args()) > 0 {
-		return errors.New("usage: handoff create \"topic or next goal\" [--intent auto|share|continue] [--source auto|codex|claude|pi]")
+		return errors.New("usage: handoff create \"topic or next goal\" [--intent auto|share|continue] [--source auto|codex|claude|pi|opencode]")
 	}
 	setFlags := map[string]bool{}
 	flags.Visit(func(item *flag.Flag) { setFlags[item.Name] = true })
@@ -596,13 +596,13 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 		AttachContext: input.AttachContext,
 	}
 	validRuntime := func(value string) bool {
-		return value == "auto" || value == "codex" || value == "claude" || value == "pi"
+		return value == "auto" || value == "codex" || value == "claude" || value == "pi" || value == "opencode"
 	}
 	if !validRuntime(selection.Source) {
-		return createSelection{}, errors.New("--source must be auto, codex, claude, or pi")
+		return createSelection{}, errors.New("--source must be auto, codex, claude, pi, or opencode")
 	}
 	if !validRuntime(selection.Runtime) {
-		return createSelection{}, errors.New("--runtime must be auto, codex, claude, or pi")
+		return createSelection{}, errors.New("--runtime must be auto, codex, claude, pi, or opencode")
 	}
 	if selection.Generator != "agent" && selection.Generator != "deterministic" && selection.Generator != "cloud" {
 		return createSelection{}, errors.New("--generator must be agent, deterministic, or cloud")
@@ -738,7 +738,10 @@ func runSession(_ string, outputFormat string, args []string) error {
 	if len(flags.Args()) != 0 {
 		return errors.New("usage: handoff session locate [--source auto|codex|claude|pi] [--goal TEXT]")
 	}
-	contextSource, err := source.Load(source.Options{Kind: *sourceName, NoGit: true})
+	if sourceKind := strings.ToLower(strings.TrimSpace(*sourceName)); sourceKind != "auto" && sourceKind != "codex" && sourceKind != "claude" && sourceKind != "pi" {
+		return errors.New("--source must be auto, codex, claude, or pi for local Session paths; OpenCode sessions are database-backed")
+	}
+	contextSource, err := source.Load(source.Options{Kind: *sourceName, NoGit: true, SkipOpenCode: true})
 	if err != nil {
 		return err
 	}
@@ -1441,9 +1444,9 @@ func schemaContract(command string) (map[string]any, error) {
 				"properties": map[string]any{
 					"goal":           stringProperty("Short topic for share intent or next goal for continue intent."),
 					"intent":         map[string]any{"type": "string", "enum": []string{"auto", "share", "continue"}, "default": "auto", "description": "Choose a discussion-result share or resumable task handoff."},
-					"source":         map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto"},
+					"source":         map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto"},
 					"generator":      map[string]any{"type": "string", "enum": []string{"agent", "deterministic", "cloud"}, "default": "agent"},
-					"runtime":        map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi"}, "default": "auto", "description": "Selects an Agent runtime, never a model."},
+					"runtime":        map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto", "description": "Selects an Agent runtime, never a model."},
 					"attach_context": booleanProperty("Persist the complete sanitized readable Context beside the handoff, independently of the generator."),
 					"review":         booleanProperty("Edit generated Markdown before publishing."),
 					"file":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable context file path."},

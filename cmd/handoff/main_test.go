@@ -88,6 +88,19 @@ func TestResolveCreateSelectionUsesPreferredVocabulary(t *testing.T) {
 	}
 }
 
+func TestResolveCreateSelectionAcceptsOpenCode(t *testing.T) {
+	selection, err := resolveCreateSelection(createSelectionInput{
+		Source: "opencode", Generator: "agent", Runtime: "opencode",
+		Set: map[string]bool{"source": true, "runtime": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Source != "opencode" || selection.Runtime != "opencode" {
+		t.Fatalf("unexpected OpenCode selection: %#v", selection)
+	}
+}
+
 func TestResolveCreateSelectionMapsLegacyVocabulary(t *testing.T) {
 	selection, err := resolveCreateSelection(createSelectionInput{
 		Source: "auto", Generator: "agent", Runtime: "auto",
@@ -164,6 +177,13 @@ func TestLocalSessionMessageIsExplicitlySameMachineOnly(t *testing.T) {
 		if !strings.Contains(message, expected) {
 			t.Fatalf("local Session message missing %q:\n%s", expected, message)
 		}
+	}
+}
+
+func TestLocalSessionLocateRejectsDatabaseBackedOpenCode(t *testing.T) {
+	err := runSession("", "text", []string{"locate", "--source", "opencode"})
+	if err == nil || !strings.Contains(err.Error(), "database-backed") {
+		t.Fatalf("unexpected OpenCode local Session result: %v", err)
 	}
 }
 
@@ -271,6 +291,12 @@ func TestSchemaContracts(t *testing.T) {
 	}
 	create, _ := schemaContract("create")
 	createProperties := create["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	for _, property := range []string{"source", "runtime"} {
+		enum := createProperties[property].(map[string]any)["enum"].([]string)
+		if !strings.Contains(strings.Join(enum, ","), "opencode") {
+			t.Fatalf("create schema %s enum does not include OpenCode: %#v", property, enum)
+		}
+	}
 	for _, legacy := range []string{"upload_context", "mode", "from", "agent", "include_transcript", "full_session", "stdin", "compact"} {
 		if _, exists := createProperties[legacy]; exists {
 			t.Fatalf("preferred create schema exposes legacy property %q", legacy)
@@ -298,6 +324,7 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 		!strings.Contains(content, "Do not turn this into a fixed questionnaire") ||
 		!strings.Contains(content, "--generator cloud") ||
 		!strings.Contains(content, "--attach-context") ||
+		!strings.Contains(content, "--source codex|claude|pi|opencode") ||
 		!strings.Contains(content, "handoff context <reference>") ||
 		!strings.Contains(content, "handoff session locate") ||
 		strings.Contains(content, "--upload-context selected") ||
