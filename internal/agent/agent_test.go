@@ -111,9 +111,10 @@ func TestGenerateParsesOpenCodeJSONEvents(t *testing.T) {
 func TestSafeOpenCodeGenerationEnvPreservesProviderAndDisablesSharingAndTools(t *testing.T) {
 	env, err := safeOpenCodeGenerationEnv([]string{
 		"KEEP=value",
+		"PWD=/source/workspace",
 		`OPENCODE_CONFIG_CONTENT={"model":"provider/model","provider":{"provider":{"options":{"apiKey":"configured"}}},"share":"auto","permission":"allow"}`,
 		"OPENCODE_AUTO_SHARE=true",
-	})
+	}, "/isolated/generator")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func TestSafeOpenCodeGenerationEnvPreservesProviderAndDisablesSharingAndTools(t 
 	if err := json.Unmarshal([]byte(environmentValue(env, "OPENCODE_CONFIG_CONTENT")), &config); err != nil {
 		t.Fatal(err)
 	}
-	if config["model"] != "provider/model" || config["share"] != "disabled" || config["permission"] != "deny" || environmentValue(env, "OPENCODE_AUTO_SHARE") != "false" || environmentValue(env, "KEEP") != "value" {
+	if config["model"] != "provider/model" || config["share"] != "disabled" || config["permission"] != "deny" || environmentValue(env, "OPENCODE_AUTO_SHARE") != "false" || environmentValue(env, "KEEP") != "value" || environmentValue(env, "PWD") != "/isolated/generator" {
 		t.Fatalf("unsafe or incomplete OpenCode environment: env=%#v config=%#v", env, config)
 	}
 }
@@ -148,7 +149,7 @@ func TestRuntimeArgsNeverResumeOrSelectAModel(t *testing.T) {
 				t.Fatalf("pi saves a session: %q", args)
 			}
 		case "opencode":
-			if !strings.Contains(joined, "--format json") || !strings.Contains(joined, "--pure") {
+			if !strings.Contains(joined, "--format json") || !strings.Contains(joined, "--pure") || !strings.Contains(joined, "--dir ") {
 				t.Fatalf("opencode generation is not isolated: %q", args)
 			}
 		}

@@ -111,7 +111,7 @@ func runtimeArgs(runtime, tempDir string) ([]string, error) {
 	case "pi":
 		return []string{"--print", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files"}, nil
 	case "opencode":
-		return []string{"run", "--format", "json", "--pure", "--title", "OpenGrove Handoff generator"}, nil
+		return []string{"run", "--format", "json", "--pure", "--title", "OpenGrove Handoff generator", "--dir", tempDir}, nil
 	default:
 		return nil, fmt.Errorf("unsupported Agent runtime %q", runtime)
 	}
@@ -122,7 +122,7 @@ func defaultExecute(ctx context.Context, name string, args []string, input, dir 
 	command.Dir = dir
 	command.Stdin = strings.NewReader(input)
 	if filepath.Base(name) == "opencode" {
-		env, err := safeOpenCodeGenerationEnv(os.Environ())
+		env, err := safeOpenCodeGenerationEnv(os.Environ(), dir)
 		if err != nil {
 			return "", err
 		}
@@ -158,7 +158,8 @@ func defaultExecute(ctx context.Context, name string, args []string, input, dir 
 	return stdout.String(), nil
 }
 
-func safeOpenCodeGenerationEnv(environ []string) ([]string, error) {
+func safeOpenCodeGenerationEnv(environ []string, dir string) ([]string, error) {
+	environ = openCodeWorkingEnv(environ, dir)
 	config := map[string]any{}
 	if value := strings.TrimSpace(environmentValue(environ, "OPENCODE_CONFIG_CONTENT")); value != "" {
 		if err := json.Unmarshal([]byte(value), &config); err != nil {
@@ -176,6 +177,10 @@ func safeOpenCodeGenerationEnv(environ []string) ([]string, error) {
 	}
 	result := setEnvironmentValue(environ, "OPENCODE_CONFIG_CONTENT", string(encoded))
 	return setEnvironmentValue(result, "OPENCODE_AUTO_SHARE", "false"), nil
+}
+
+func openCodeWorkingEnv(environ []string, dir string) []string {
+	return setEnvironmentValue(environ, "PWD", dir)
 }
 
 func environmentValue(environ []string, name string) string {
@@ -257,6 +262,7 @@ func cleanupOpenCodeGenerationSession(commandName, dir string, started time.Time
 	defer cancel()
 	list := exec.CommandContext(ctx, commandName, "session", "list", "--format", "json", "--max-count", "20", "--pure")
 	list.Dir = dir
+	list.Env = openCodeWorkingEnv(os.Environ(), dir)
 	data, err := list.Output()
 	if err != nil {
 		return fmt.Errorf("identify ephemeral OpenCode session for cleanup: %w", err)
@@ -281,6 +287,7 @@ func cleanupOpenCodeGenerationSession(commandName, dir string, started time.Time
 	}
 	remove := exec.CommandContext(ctx, commandName, "session", "delete", matches[0].ID, "--pure")
 	remove.Dir = dir
+	remove.Env = openCodeWorkingEnv(os.Environ(), dir)
 	if output, err := remove.CombinedOutput(); err != nil {
 		detail := strings.TrimSpace(card.Redact(string(output)))
 		if detail != "" {
