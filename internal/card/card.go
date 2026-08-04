@@ -807,6 +807,10 @@ func ParseSections(value string, requestedIntent ...string) (Sections, error) {
 	if content == "" {
 		return Sections{}, fmt.Errorf("no JSON object in Agent response")
 	}
+	content, err := normalizeAgentStringLists(content)
+	if err != nil {
+		return Sections{}, fmt.Errorf("parse Agent response: %w", err)
+	}
 	var sections Sections
 	if err := json.Unmarshal([]byte(content), &sections); err != nil {
 		return Sections{}, fmt.Errorf("parse Agent response: %w", err)
@@ -820,6 +824,54 @@ func ParseSections(value string, requestedIntent ...string) (Sections, error) {
 		return Sections{}, fmt.Errorf("Agent response did not satisfy the %s handoff contract: %s", sections.Intent, missingSectionFields(sections))
 	}
 	return sections, nil
+}
+
+var agentStringListFields = []string{
+	"human_todos",
+	"key_conclusions",
+	"reasoning",
+	"examples",
+	"corrections",
+	"rejected_options",
+	"decisions",
+	"important_files",
+	"next_steps",
+	"open_questions",
+}
+
+// Models without native output-schema support occasionally serialize a
+// single list item as a JSON string. Accept that one narrow representation
+// while leaving objects, numbers, booleans, and mixed arrays strict.
+func normalizeAgentStringLists(content string) (string, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &object); err != nil {
+		return "", err
+	}
+	changed := false
+	for _, field := range agentStringListFields {
+		raw, exists := object[field]
+		if !exists || len(bytes.TrimSpace(raw)) == 0 || bytes.TrimSpace(raw)[0] != '"' {
+			continue
+		}
+		var singleton string
+		if err := json.Unmarshal(raw, &singleton); err != nil {
+			return "", err
+		}
+		normalized, err := json.Marshal([]string{singleton})
+		if err != nil {
+			return "", err
+		}
+		object[field] = normalized
+		changed = true
+	}
+	if !changed {
+		return content, nil
+	}
+	normalized, err := json.Marshal(object)
+	if err != nil {
+		return "", err
+	}
+	return string(normalized), nil
 }
 
 func sanitizeSections(input Sections) Sections {

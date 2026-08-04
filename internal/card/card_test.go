@@ -71,6 +71,51 @@ func TestFallbackSectionsKeepsSummaryAndCompleteHistory(t *testing.T) {
 	}
 }
 
+func TestParseSectionsAcceptsSingletonStringsForListFields(t *testing.T) {
+	sections, err := ParseSections(`{
+  "intent":"continue",
+  "human_background":"Background",
+  "human_status":"Ready",
+  "human_todos":"Continue",
+  "human_sections":[],
+  "context":"Known context",
+  "decisions":"Keep the narrow fix",
+  "current_state":"Ready",
+  "important_files":"internal/card/card.go",
+  "next_steps":"Continue",
+  "open_questions":"Verify OpenCode"
+}`, IntentContinue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sections.HumanTodos) != 1 || sections.HumanTodos[0] != "Continue" ||
+		len(sections.Decisions) != 1 || sections.Decisions[0] != "Keep the narrow fix" ||
+		len(sections.ImportantFiles) != 1 || sections.ImportantFiles[0] != "internal/card/card.go" ||
+		len(sections.NextSteps) != 1 || sections.NextSteps[0] != "Continue" ||
+		len(sections.OpenQuestions) != 1 || sections.OpenQuestions[0] != "Verify OpenCode" {
+		t.Fatalf("singleton lists were not normalized: %#v", sections)
+	}
+}
+
+func TestParseSectionsKeepsNonStringListValuesStrict(t *testing.T) {
+	_, err := ParseSections(`{
+  "intent":"continue",
+  "human_background":"Background",
+  "human_status":"Ready",
+  "human_todos":["Continue"],
+  "human_sections":[],
+  "context":"Known context",
+  "decisions":{"unexpected":true},
+  "current_state":"Ready",
+  "important_files":[],
+  "next_steps":["Continue"],
+  "open_questions":[]
+}`, IntentContinue)
+	if err == nil || !strings.Contains(err.Error(), "cannot unmarshal object") {
+		t.Fatalf("unexpected non-string list result: %v", err)
+	}
+}
+
 func TestTruncateDoesNotSplitUnicode(t *testing.T) {
 	if got := truncate("你好世界", 3); got != "你好世…" {
 		t.Fatalf("unicode truncate = %q", got)
