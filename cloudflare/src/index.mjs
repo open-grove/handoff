@@ -968,21 +968,168 @@ function appendMarkdownListIfAny(lines, title, values) {
 
 const OPENGROVE_SAPLING_SVG = `<svg viewBox="0 0 128 128" aria-hidden="true" focusable="false" shape-rendering="crispEdges"><g transform="translate(24 18) scale(0.72)"><rect x="0" y="0" width="31" height="31" fill="#7BCB57"/><rect x="16" y="16" width="31" height="31" fill="#5FB24A"/><rect x="79" y="15" width="31" height="31" fill="#7BCB57"/><rect x="63" y="31" width="31" height="31" fill="#5FB24A"/><rect x="47" y="47" width="17" height="58" fill="#202424"/><rect x="60" y="47" width="4" height="58" fill="#343A38"/><rect x="32" y="105" width="47" height="15" fill="#202424"/><rect x="32" y="105" width="47" height="3" fill="#343A38"/></g></svg>`;
 
+function renderDocumentBody(value) {
+  const lines = (sanitizeText(value) || "Unknown").replace(/\r\n/g, "\n").split("\n");
+  const output = [];
+  let paragraph = [];
+  let quote = [];
+  let listType = "";
+  let listItems = [];
+  let code = [];
+  let codeLanguage = "";
+  let inCode = false;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    output.push(`<p>${inlineMarkdown(paragraph.join("\n"))}</p>`);
+    paragraph = [];
+  };
+  const flushQuote = () => {
+    if (!quote.length) return;
+    output.push(`<blockquote>${inlineMarkdown(quote.join("\n"))}</blockquote>`);
+    quote = [];
+  };
+  const flushList = () => {
+    if (!listItems.length) return;
+    if (listType === "task") {
+      output.push(`<ul class="task-list">${listItems.map((item) => `<li><span class="task-check${item.checked ? " is-checked" : ""}" aria-hidden="true">${item.checked ? "✓" : ""}</span><span>${inlineMarkdown(item.text)}</span></li>`).join("")}</ul>`);
+    } else {
+      const tag = listType === "ol" ? "ol" : "ul";
+      output.push(`<${tag}>${listItems.map((item) => `<li>${inlineMarkdown(item.text)}</li>`).join("")}</${tag}>`);
+    }
+    listType = "";
+    listItems = [];
+  };
+  const flushCode = () => {
+    const language = codeLanguage.trim().toLowerCase();
+    const label = !language || language === "text" || language === "txt" || language === "plaintext"
+      ? "plain text"
+      : language;
+    const languageClass = language ? ` class="language-${escapeHTML(language)}"` : "";
+    output.push(`<div class="code-block"><div class="code-header"><span>${escapeHTML(label)}</span></div><pre><code${languageClass}>${escapeHTML(code.join("\n"))}</code></pre></div>`);
+    code = [];
+    codeLanguage = "";
+  };
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const fence = line.match(/^\s*```([^`]*)$/);
+    if (fence) {
+      if (inCode) flushCode();
+      else {
+        flushParagraph();
+        flushQuote();
+        flushList();
+        codeLanguage = fence[1] || "";
+      }
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) {
+      code.push(line);
+      continue;
+    }
+
+    const mathBlock = collectDisplayMath(lines, lineIndex);
+    if (mathBlock) {
+      flushParagraph();
+      flushQuote();
+      flushList();
+      output.push(renderMathMarkup(mathBlock.source, true, mathBlock.original));
+      lineIndex = mathBlock.endIndex;
+      continue;
+    }
+
+    const heading = line.match(/^\s*(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushQuote();
+      flushList();
+      const level = Math.min(4, Math.max(3, heading[1].length + 1));
+      output.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const quoteLine = line.match(/^\s*>\s?(.*)$/);
+    if (quoteLine) {
+      flushParagraph();
+      flushList();
+      quote.push(quoteLine[1]);
+      continue;
+    }
+    flushQuote();
+
+    const task = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.+)$/);
+    if (task) {
+      flushParagraph();
+      if (listType && listType !== "task") flushList();
+      listType = "task";
+      listItems.push({ text: task[2], checked: task[1].toLowerCase() === "x" });
+      continue;
+    }
+    const unordered = line.match(/^\s*[-*]\s+(.+)$/);
+    if (unordered) {
+      flushParagraph();
+      if (listType && listType !== "ul") flushList();
+      listType = "ul";
+      listItems.push({ text: unordered[1], checked: false });
+      continue;
+    }
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      flushParagraph();
+      if (listType && listType !== "ol") flushList();
+      listType = "ol";
+      listItems.push({ text: ordered[1], checked: false });
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    flushList();
+    paragraph.push(line);
+  }
+  if (inCode) flushCode();
+  flushParagraph();
+  flushQuote();
+  flushList();
+  return output.join("");
+}
+
+function renderDocumentValue(value, { task = false } = {}) {
+  if (!Array.isArray(value)) return renderDocumentBody(value);
+  if (!value.length) return "";
+  if (task) {
+    return `<ul class="task-list">${value.map((item) => `<li><span class="task-check" aria-hidden="true"></span><span>${inlineMarkdown(sanitizeText(item))}</span></li>`).join("")}</ul>`;
+  }
+  return `<ul>${value.map((item) => `<li>${inlineMarkdown(sanitizeText(item))}</li>`).join("")}</ul>`;
+}
+
 export function renderHTML(handoff, sections) {
+  return renderHandoffHTML(handoff, sections, true);
+}
+
+export function renderHTMLLegacy(handoff, sections) {
+  return renderHandoffHTML(handoff, sections, false);
+}
+
+function renderHandoffHTML(handoff, sections, documentMarkdown) {
   const title = handoff.title || compactTitle(handoff.goal);
   const intent = sanitizeIntent(handoff.intent || sections.intent) || "continue";
   const contextLink = handoff.context?.available
     ? `<a href="/v1/handoffs/${escapeHTML(handoff.id)}/context">查看附带的完整 Context（JSON）↗</a>`
     : "";
   const humanSections = intent === "share"
-    ? (sections.human_sections || []).map((section) => [section.title, section.body])
+    ? (sections.human_sections || []).map((section) => [section.title, section.body, false])
     : [
-    ["项目背景", sections.human_background],
-    ["当前情况", sections.human_status],
-    ["待办事项", sections.human_todos],
+    ["项目背景", sections.human_background, false],
+    ["当前情况", sections.human_status, false],
+    ["待办事项", sections.human_todos, true],
   ];
   const humanBlocks = humanSections
-    .map(([sectionTitle, value]) => `<section class="summary-block"><h3>${escapeHTML(sectionTitle)}</h3>${intent === "share" ? renderSectionBody(value) : (Array.isArray(value) ? renderItems(value) : renderText(value))}</section>`)
+    .map(([sectionTitle, value, task]) => `<section class="summary-block"><h3>${escapeHTML(sectionTitle)}</h3>${documentMarkdown ? `<div class="prose">${renderDocumentValue(value, { task })}</div>` : (intent === "share" ? renderSectionBody(value) : (Array.isArray(value) ? renderItems(value) : renderText(value)))}</section>`)
     .join("");
   let agentSectionValues = intent === "share" ? [
     ["Topic", handoff.goal],
@@ -1000,13 +1147,14 @@ export function renderHTML(handoff, sections) {
     ["Open Questions", sections.open_questions],
   ];
   if (intent === "share") agentSectionValues = agentSectionValues.filter(([, value]) => hasSectionValue(value));
-  const agentSections = agentSectionValues.map(([sectionTitle, value]) => `<section><h3>${escapeHTML(sectionTitle)}</h3>${Array.isArray(value) ? renderItems(value) : renderSectionBody(value)}</section>`).join("");
+  const agentSections = agentSectionValues.map(([sectionTitle, value]) => `<section><h3>${escapeHTML(sectionTitle)}</h3>${documentMarkdown ? `<div class="prose">${renderDocumentValue(value)}</div>` : (Array.isArray(value) ? renderItems(value) : renderSectionBody(value))}</section>`).join("");
   const humanTitle = intent === "share" ? "讨论成果" : "先看这里";
   const agentTitle = intent === "share" ? "技术附录" : "Agent 交接上下文";
 
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)} · OpenGrove Handoff</title><style>
 :root{color-scheme:light;--bg:#f7f7f5;--paper:#fff;--ink:#252525;--muted:#74746f;--line:#e7e6e2;--accent:#635bda;--accent-soft:#eeecff;--green:#247a52;--green-soft:#e9f7ef;--shadow:0 18px 60px rgba(31,31,28,.07)}*{box-sizing:border-box}html,body{margin:0;background:var(--bg)}body{color:var(--ink);font:16px/1.7 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}.shell{width:min(900px,calc(100% - 32px));margin:auto;padding:24px 0 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:42px}.brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-size:14px;font-weight:720;text-decoration:none}.brand-mark{display:grid;place-items:center;flex:0 0 auto;width:30px;height:30px;padding:2px;border:1px solid var(--line);border-radius:9px;background:#fbfbfa}.brand-mark svg{display:block;width:100%;height:100%}.brand small{color:var(--muted);font-size:14px;font-weight:540}.raw-link{padding:6px 13px;border:1px solid var(--line);border-radius:10px;color:var(--muted);background:var(--paper);font-size:13px;font-weight:650;text-decoration:none}.hero,.content{max-width:760px;margin-left:auto;margin-right:auto}.hero{margin-bottom:22px;text-align:center}.hero h1{margin:0;font-size:clamp(1.65rem,3.5vw,2.35rem);line-height:1.22;letter-spacing:-.035em}.content{display:grid;gap:16px}.panel{border:1px solid var(--line);border-radius:20px;background:var(--paper);overflow:hidden}.human-panel{padding:30px clamp(22px,5vw,46px) 38px;box-shadow:var(--shadow)}.panel-heading{display:flex;align-items:center;gap:13px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--line)}.audience-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:var(--accent-soft);font-size:18px}.eyebrow{display:block;color:var(--accent);font-size:11px;line-height:1.35;font-weight:780;letter-spacing:.12em}.panel-heading h2{margin:3px 0 0;font-size:18px}.human-content{display:grid;grid-template-columns:1fr 1fr;gap:22px 30px}.summary-block:last-child{grid-column:1/-1;padding-top:22px;border-top:1px solid var(--line)}h3{margin:0 0 9px;font-size:14px}.human-content h3{color:var(--green)}p,ul{margin:0}ul{padding-left:1.2em}li+li{margin-top:5px}.agent-panel{background:rgba(255,255,255,.58)}.agent-panel summary{display:flex;align-items:center;justify-content:space-between;padding:21px 24px;cursor:pointer;list-style:none}.agent-panel summary::-webkit-details-marker{display:none}.summary-main{display:flex;align-items:center;gap:13px}.summary-main strong{display:block;margin-top:3px;font-size:15px}.chevron{font-size:28px;color:var(--muted);transform:rotate(90deg)}.agent-panel[open] .chevron{transform:rotate(-90deg)}.agent-body{padding:24px;border-top:1px solid var(--line)}.agent-instruction{margin:0 0 28px;padding:18px 20px;border:1px solid #dcd8ff;border-radius:14px;background:var(--accent-soft)}.agent-instruction p{margin-top:5px}.agent-instruction a{color:var(--accent);font-size:13px}.agent-content{display:grid;gap:24px}.agent-content h3{font-size:15px}.agent-content p{white-space:pre-wrap}.agent-content code,.agent-instruction code{padding:.13em .38em;border-radius:5px;background:#f0f0ed;font: .9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#171716;--paper:#232322;--ink:#f1f1ef;--muted:#a4a49f;--line:#373735;--accent:#a9a3ff;--accent-soft:#302e4b;--green:#72c99a;--green-soft:#203a2d;--shadow:0 20px 65px rgba(0,0,0,.25)}.agent-panel{background:rgba(35,35,34,.72)}.agent-content code,.agent-instruction code{background:#30302e}.agent-instruction{border-color:#48436d}}@media(max-width:640px){.shell{width:min(100% - 20px,900px);padding-top:18px}.topbar{margin-bottom:32px}.hero h1{font-size:1.75rem}.human-panel{padding:24px 20px 30px}.human-content{display:block}.summary-block{margin-top:24px}.summary-block:first-child{margin-top:0}.summary-block:last-child{padding-top:24px}.agent-panel summary{padding:18px}.agent-body{padding:18px}}
 .human-content{display:grid;grid-template-columns:1fr;gap:0}.summary-block{min-width:0;margin:0;padding:22px 0;border-top:1px solid var(--line)}.summary-block:first-child{padding-top:0;border-top:0}.summary-block:last-child{padding-bottom:0}.human-content p+p,.human-content p+ul,.human-content ul+p{margin-top:12px}.human-content pre{overflow:auto;margin:14px 0 0;padding:14px;border-radius:10px;color:#ececf0;background:#202022}.human-content code{padding:.13em .38em;border-radius:5px;background:#f0f0ed;font:.9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.human-content pre code{padding:0;background:none}.math-inline{display:inline-block;max-width:100%;vertical-align:-.15em}.math-display{display:block;max-width:100%;margin:1.15em 0;overflow-x:auto;padding:.2em 0;text-align:center}.math-display .katex{display:inline-block;min-width:max-content}.math-display math{font-size:1.08em}.math-inline math{font-size:1em}.math-source-display{display:block;overflow-x:auto;padding:.7em}@media(prefers-color-scheme:dark){.human-content code{background:#30302e}.human-content pre{background:#111}.human-content pre code{background:none}}
+${documentMarkdown ? `.prose{min-width:0}.human-content .prose blockquote,.agent-content .prose blockquote{margin:12px 0;padding-left:13px;border-left:2px solid color-mix(in srgb,var(--muted) 34%,transparent);color:var(--muted);font-style:italic}.human-content .prose blockquote+*,.agent-content .prose blockquote+*{margin-top:12px}.code-block{margin:14px 0;border:1px solid var(--line);border-radius:8px;background:var(--paper);overflow:hidden}.code-header{padding:7px 11px;border-bottom:1px solid var(--line);color:var(--muted);font-size:11px;font-weight:650;letter-spacing:.08em;text-transform:uppercase}.human-content .code-block pre,.agent-content .code-block pre{overflow:auto;margin:0;padding:12px;border-radius:0;background:#fbfbfa;color:var(--ink)}.human-content .code-block pre code,.agent-content .code-block pre code{padding:0;background:none;color:inherit;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}.task-list{padding-left:0!important;list-style:none}.task-list li{display:flex;align-items:flex-start;gap:9px}.task-check{display:inline-grid;place-items:center;flex:0 0 auto;width:15px;height:15px;margin-top:5px;border:1px solid color-mix(in srgb,var(--muted) 55%,transparent);border-radius:4px;color:var(--paper);font-size:10px;line-height:1}.task-check.is-checked{border-color:var(--accent);background:var(--accent)}@media(prefers-color-scheme:dark){.human-content .code-block pre,.agent-content .code-block pre{background:#1d1d1c}}` : ""}
 </style></head><body><div class="shell"><header class="topbar"><a class="brand" href="https://github.com/open-grove/handoff" aria-label="Open OpenGrove Handoff on GitHub"><span class="brand-mark">${OPENGROVE_SAPLING_SVG}</span><div>OpenGrove <small>/ Handoff</small></div></a><a class="raw-link" href="./${escapeHTML(handoff.id)}.md">Markdown ↗</a></header><main><section class="hero"><h1>${escapeHTML(title)}</h1></section><div class="content"><section class="panel human-panel"><div class="panel-heading"><span class="audience-icon" aria-hidden="true">🖐️</span><div><span class="eyebrow">FOR HUMAN</span><h2>${humanTitle}</h2></div></div><div class="human-content">${humanBlocks}</div></section><details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>${agentTitle}</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span class="eyebrow">给 Agent 的指令</span><p>请使用 <strong>OpenGrove Handoff</strong> 读取：<code>opengrove-handoff:${escapeHTML(handoff.id)}</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a>${contextLink}</div><div class="agent-content">${agentSections}</div></div></details></div></main></div></body></html>`;
 }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import worker, { readAgentPlanText, renderHTML, route } from "../src/index.mjs";
+import worker, { readAgentPlanText, renderHTML, renderHTMLLegacy, route } from "../src/index.mjs";
 
 function fakeDB() {
   const records = new Map();
@@ -100,11 +100,13 @@ test("publish, read, render, and delete a handoff", async () => {
   assert.equal(pageResponse.status, 200);
   assert.match(page, /<h1>继续交接工具<\/h1>/);
   assert.match(page, /核心流程可用/);
-  assert.match(page, /\.human-content\{display:grid;grid-template-columns:1fr;gap:0\}/);
+  assert.match(page, /class="panel human-panel"/);
+  assert.match(page, /class="panel agent-panel"/);
   assert.match(page, /\.hero\{margin-bottom:22px;text-align:center\}/);
   assert.match(page, /class="brand-mark"><svg viewBox="0 0 128 128"/);
   assert.match(page, /fill="#5FB24A"/);
   assert.match(page, /class="brand" href="https:\/\/github.com\/open-grove\/handoff"/);
+  for (const shellChange of [`class="response-card"`, `class="appendix"`, `class="title-block"`, `class="intent"`, `class="top-title"`]) assert.ok(!page.includes(shellChange));
   for (const removed of ["READY TO CONTINUE", "有效期至", "Shared with OpenGrove", `class="brand-mark">OG`]) assert.ok(!page.includes(removed));
 
   const markdownResponse = await route(new Request(`${created.share_url}.md`), env, ctx);
@@ -166,7 +168,7 @@ test("share handoffs preserve conclusions without inventing task sections", asyn
   assert.match(created.handoff.markdown, /> 这是一份讨论成果分享。/);
   const page = renderHTML(created.handoff, {
     intent: "share",
-    human_sections: [{ title: "先把三个东西分清楚", body: "MCP App 是通信协议。\n\n- 理由和结论放在一起\n\n```text\nView -> Host\n```" }],
+    human_sections: [{ title: "先把三个东西分清楚", body: "MCP App 是通信协议。\n\n> SDK 只是代码接口，不能单凭名字判断进程结构。\n\n- 理由和结论放在一起\n\n```text\nView -> Host\n```" }],
     context: "technical",
     decisions: ["保留"],
     important_files: [],
@@ -174,8 +176,25 @@ test("share handoffs preserve conclusions without inventing task sections", asyn
   });
   assert.match(page, /讨论成果/);
   assert.match(page, /技术附录/);
+  assert.match(page, /class="panel human-panel"/);
+  assert.match(page, /class="panel-heading"/);
+  assert.match(page, /🖐️/);
+  assert.match(page, /🤖/);
   assert.match(page, /<ul><li>理由和结论放在一起<\/li><\/ul>/);
-  assert.match(page, /<pre><code>View -&gt; Host<\/code><\/pre>/);
+  assert.match(page, /<blockquote>SDK 只是代码接口，不能单凭名字判断进程结构。<\/blockquote>/);
+  assert.match(page, /class="code-block"/);
+  assert.match(page, /<span>plain text<\/span>/);
+  assert.match(page, /<pre><code class="language-text">View -&gt; Host<\/code><\/pre>/);
+  const legacyPage = renderHTMLLegacy(created.handoff, {
+    intent: "share",
+    human_sections: [{ title: "先把三个东西分清楚", body: "MCP App 是通信协议。" }],
+    context: "technical",
+    decisions: ["保留"],
+    important_files: [],
+    open_questions: [],
+  });
+  assert.match(legacyPage, /class="panel human-panel"/);
+  assert.doesNotMatch(legacyPage, /class="response-card"/);
 });
 
 test("share pages render inline and display LaTeX as native MathML", () => {

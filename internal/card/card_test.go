@@ -273,9 +273,15 @@ func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := HTML(handoff)
+	legacyPage := HTMLLegacy(handoff)
 	for _, expected := range []string{`class="panel human-panel"`, `class="panel agent-panel"`, `class="brand" href="https://github.com/open-grove/handoff"`, `class="brand-mark"><svg viewBox="0 0 128 128"`, `fill="#5FB24A"`, "核心流程已经可用", "Agent 交接上下文", "abcdefghijklmnopqrstuv", "查看安装方法"} {
 		if !strings.Contains(page, expected) {
 			t.Fatalf("page missing %q: %s", expected, page)
+		}
+	}
+	for _, expected := range []string{`class="panel human-panel"`, `class="panel agent-panel"`, "核心流程已经可用"} {
+		if !strings.Contains(legacyPage, expected) {
+			t.Fatalf("legacy page missing %q: %s", expected, legacyPage)
 		}
 	}
 	for _, removed := range []string{"READY TO CONTINUE", "一份给人和 Agent", "来自 codex", "有效期至", "Shared with OpenGrove", `class="brand-mark">OG`} {
@@ -286,14 +292,41 @@ func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
 	if !strings.Contains(page, `<section class="hero"><h1>继续交接工具</h1></section>`) {
 		t.Fatalf("page title is not the compact heading: %s", page)
 	}
-	if !strings.Contains(page, `.human-content{display:grid;grid-template-columns:1fr;gap:0}`) {
-		t.Fatalf("human summary is not rendered as three full-width rows: %s", page)
-	}
 	if !strings.Contains(page, `.hero{max-width:760px;margin:0 auto 22px;text-align:center}`) {
 		t.Fatalf("page title is not centered: %s", page)
 	}
+	for _, shellChange := range []string{`class="response-card"`, `class="appendix"`, `class="title-block"`, `class="intent"`} {
+		if strings.Contains(page, shellChange) {
+			t.Fatalf("Markdown-only candidate changed the page shell with %q: %s", shellChange, page)
+		}
+	}
 	if strings.Index(page, "核心流程已经可用") > strings.Index(page, "Agent 交接上下文") {
 		t.Fatal("human summary must appear before agent context")
+	}
+}
+
+func TestHTMLUsesDocumentMarkdownForQuotesTasksAndPlainText(t *testing.T) {
+	handoff := types.Handoff{
+		ID:       "abcdefghijklmnopqrstuv",
+		Title:    "Agent 接入架构",
+		Goal:     "Agent 接入架构",
+		Intent:   IntentShare,
+		Markdown: "# Agent 接入架构\n\n## For Human\n\n### 先从进程理解\n\n> SDK 只是代码接口，不能单凭名字判断进程结构。\n\n- [x] 区分协议与进程\n- [ ] 核对适配层\n\n```text\nAgent -> ACP -> OpenGrove\n```\n\n## For Agent\n\n### Technical Context\n\nUse `AcpSessionProjector`.\n",
+	}
+	page := HTML(handoff)
+	legacyPage := HTMLLegacy(handoff)
+	for _, expected := range []string{`<blockquote>`, `class="task-list"`, `class="code-block"`, `<span>plain text</span>`, `class="language-text"`, `class="panel agent-panel"`} {
+		if !strings.Contains(page, expected) {
+			t.Fatalf("document page missing %q: %s", expected, page)
+		}
+	}
+	for _, preserved := range []string{`class="panel-heading"`, "🖐️", "🤖", `<section class="hero"><h1>Agent 接入架构</h1></section>`} {
+		if !strings.Contains(page, preserved) || !strings.Contains(legacyPage, preserved) {
+			t.Fatalf("candidate and legacy shells do not both preserve %q", preserved)
+		}
+	}
+	if strings.Contains(legacyPage, `class="code-block"`) {
+		t.Fatalf("legacy renderer unexpectedly contains enhanced Markdown nodes: %s", legacyPage)
 	}
 }
 

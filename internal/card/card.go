@@ -568,7 +568,40 @@ func unescapeMarkdownTitle(value string) string {
 
 const openGroveSaplingSVG = `<svg viewBox="0 0 128 128" aria-hidden="true" focusable="false" shape-rendering="crispEdges"><g transform="translate(24 18) scale(0.72)"><rect x="0" y="0" width="31" height="31" fill="#7BCB57"/><rect x="16" y="16" width="31" height="31" fill="#5FB24A"/><rect x="79" y="15" width="31" height="31" fill="#7BCB57"/><rect x="63" y="31" width="31" height="31" fill="#5FB24A"/><rect x="47" y="47" width="17" height="58" fill="#202424"/><rect x="60" y="47" width="4" height="58" fill="#343A38"/><rect x="32" y="105" width="47" height="15" fill="#202424"/><rect x="32" y="105" width="47" height="3" fill="#343A38"/></g></svg>`
 
+const handoffMarkdownEnhancementStyles = `.human-content .prose blockquote,.agent-content blockquote{margin-left:0;padding-left:13px;border-left:2px solid color-mix(in srgb,var(--muted) 34%,transparent);color:var(--muted);font-style:italic}.code-block{margin:14px 0;border:1px solid var(--line);border-radius:8px;background:var(--paper-soft);overflow:hidden}.code-header{padding:7px 11px;border-bottom:1px solid var(--line);color:var(--muted);font-size:11px;font-weight:650;letter-spacing:.08em;text-transform:uppercase}.prose .code-block pre{overflow:auto;margin:0;padding:12px;border-radius:0;background:var(--paper-soft);color:var(--ink)}.prose .code-block pre code{padding:0;background:none;color:inherit;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}.task-list{padding-left:0!important;list-style:none}.task-list li{display:flex;align-items:flex-start;gap:9px}.task-list input{width:15px;height:15px;margin:5px 0 0;accent-color:var(--accent)}`
+
+var renderedCodeBlockPattern = regexp.MustCompile(`(?s)<pre><code(?: class="language-([^"]+)")?>(.*?)</code></pre>`)
+
+func renderMarkdownDocument(markdown string) string {
+	rendered := renderMarkdown(markdown)
+	rendered = strings.ReplaceAll(rendered, "<ul>\n<li><input", "<ul class=\"task-list\">\n<li><input")
+	return renderedCodeBlockPattern.ReplaceAllStringFunc(rendered, func(block string) string {
+		matches := renderedCodeBlockPattern.FindStringSubmatch(block)
+		if len(matches) != 3 {
+			return block
+		}
+		language := strings.ToLower(strings.TrimSpace(matches[1]))
+		label := language
+		if label == "" || label == "text" || label == "txt" || label == "plaintext" {
+			label = "plain text"
+		}
+		languageClass := ""
+		if language != "" {
+			languageClass = ` class="language-` + html.EscapeString(language) + `"`
+		}
+		return `<div class="code-block"><div class="code-header"><span>` + html.EscapeString(label) + `</span></div><pre><code` + languageClass + `>` + matches[2] + `</code></pre></div>`
+	})
+}
+
 func HTML(handoff types.Handoff) string {
+	return htmlPage(handoff, true)
+}
+
+func HTMLLegacy(handoff types.Handoff) string {
+	return htmlPage(handoff, false)
+}
+
+func htmlPage(handoff types.Handoff, documentMarkdown bool) string {
 	displayMarkdown := withoutFrontMatter(handoff.Markdown)
 	title := strings.TrimSpace(handoff.Title)
 	if title == "" {
@@ -588,15 +621,29 @@ func HTML(handoff types.Handoff) string {
 			humanTitle = "讨论成果"
 			agentTitle = "技术附录"
 		}
-		content = `<section class="panel human-panel"><div class="panel-heading"><span class="audience-icon" aria-hidden="true">🖐️</span><div><span class="eyebrow">FOR HUMAN</span><h2>` + html.EscapeString(humanTitle) + `</h2></div></div><div class="human-content">` + renderHumanSummary(humanMarkdown) + `</div></section>` +
-			`<details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>` + html.EscapeString(agentTitle) + `</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span>给 Agent 的指令</span><p>请使用 <strong>OpenGrove Handoff</strong> 读取：<code>opengrove-handoff:` + id + `</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a>` + contextLink + `</div><div class="prose agent-content">` + renderMarkdown(agentMarkdown) + `</div></div></details>`
+		humanContent := renderHumanSummary(humanMarkdown)
+		agentContent := renderMarkdown(agentMarkdown)
+		if documentMarkdown {
+			humanContent = renderHumanSummaryDocument(humanMarkdown)
+			agentContent = renderMarkdownDocument(agentMarkdown)
+		}
+		content = `<section class="panel human-panel"><div class="panel-heading"><span class="audience-icon" aria-hidden="true">🖐️</span><div><span class="eyebrow">FOR HUMAN</span><h2>` + html.EscapeString(humanTitle) + `</h2></div></div><div class="human-content">` + humanContent + `</div></section>` +
+			`<details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>` + html.EscapeString(agentTitle) + `</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span>给 Agent 的指令</span><p>请使用 <strong>OpenGrove Handoff</strong> 读取：<code>opengrove-handoff:` + id + `</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a>` + contextLink + `</div><div class="prose agent-content">` + agentContent + `</div></div></details>`
 	} else {
-		content = `<section class="panel legacy-panel"><div class="prose">` + renderMarkdown(displayMarkdown) + `</div></section>`
+		rendered := renderMarkdown(displayMarkdown)
+		if documentMarkdown {
+			rendered = renderMarkdownDocument(displayMarkdown)
+		}
+		content = `<section class="panel legacy-panel"><div class="prose">` + rendered + `</div></section>`
 	}
-	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(title) + ` · OpenGrove Handoff</title><style>
+	page := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(title) + ` · OpenGrove Handoff</title><style>
 :root{color-scheme:light;--bg:#f7f7f5;--paper:#fff;--paper-soft:#fbfbfa;--ink:#252525;--muted:#74746f;--faint:#a3a39e;--line:#e7e6e2;--accent:#635bda;--accent-soft:#eeecff;--green:#247a52;--green-soft:#e9f7ef;--shadow:0 18px 60px rgba(31,31,28,.07)}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;color:var(--ink);background:var(--bg);font:16px/1.7 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}.shell{width:min(900px,calc(100% - 32px));margin:0 auto;padding:24px 0 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:42px}.brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-size:14px;font-weight:720;letter-spacing:-.01em;text-decoration:none}.brand-mark{display:grid;place-items:center;flex:0 0 auto;width:30px;height:30px;padding:2px;border:1px solid var(--line);border-radius:9px;background:#fbfbfa}.brand-mark svg{display:block;width:100%;height:100%}.brand span:last-child{color:var(--muted);font-weight:540}.raw-link{display:inline-flex;align-items:center;min-height:36px;padding:6px 13px;border:1px solid var(--line);border-radius:10px;color:var(--muted);background:rgba(255,255,255,.7);font-size:13px;font-weight:650;text-decoration:none;transition:.16s ease}.raw-link:hover{color:var(--ink);border-color:#cfcec8;background:var(--paper);transform:translateY(-1px)}.hero{max-width:760px;margin:0 auto 22px;text-align:center}.eyebrow{display:block;color:var(--accent);font-size:11px;line-height:1.35;font-weight:780;letter-spacing:.12em}.hero h1{margin:0;font-size:clamp(1.65rem,3.5vw,2.35rem);line-height:1.22;letter-spacing:-.035em;text-wrap:balance}.content{display:grid;gap:16px;max-width:760px;margin:0 auto}.panel{border:1px solid var(--line);border-radius:20px;background:var(--paper);box-shadow:var(--shadow);overflow:hidden}.human-panel{padding:30px clamp(22px,5vw,46px) 38px}.panel-heading{display:flex;align-items:center;gap:13px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--line)}.audience-icon{display:grid;place-items:center;flex:0 0 auto;width:38px;height:38px;border-radius:12px;background:var(--accent-soft);font-size:18px}.panel-heading h2{margin:3px 0 0;font-size:18px;line-height:1.2;letter-spacing:-.02em}.human-content{display:grid;grid-template-columns:1fr 1fr;gap:22px 30px}.human-content h3{display:flex;align-items:center;gap:8px;margin:0 0 9px;font-size:14px;color:var(--green);letter-spacing:.01em}.human-content h3:before{content:"";width:7px;height:7px;border-radius:50%;background:#60b88b;box-shadow:0 0 0 4px var(--green-soft)}.human-content h3:nth-of-type(3){grid-column:1/-1}.human-content h3~h3{margin-top:0}.human-content p,.human-content ul{margin-top:-4px}.human-content ul{padding-left:1.2em}.human-content li+li{margin-top:5px}.agent-panel{box-shadow:none;background:rgba(255,255,255,.58)}.agent-panel summary{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:21px 24px;cursor:pointer;list-style:none}.agent-panel summary::-webkit-details-marker{display:none}.summary-main{display:flex;align-items:center;gap:13px}.summary-main .audience-icon{background:#f0f0ee}.summary-main strong{display:block;margin-top:3px;font-size:15px}.chevron{font-size:28px;line-height:1;color:var(--faint);transform:rotate(90deg);transition:transform .18s ease}.agent-panel[open] .chevron{transform:rotate(-90deg)}.agent-body{padding:0 24px 30px;border-top:1px solid var(--line)}.agent-instruction{position:relative;margin:24px 0 28px;padding:18px 20px;border:1px solid #dcd8ff;border-radius:14px;background:var(--accent-soft)}.agent-instruction>span{color:var(--accent);font-size:11px;font-weight:780;letter-spacing:.09em}.agent-instruction p{margin:5px 0 3px}.agent-instruction a{font-size:13px}.prose{min-width:0}.prose h1,.prose h2,.prose h3{line-height:1.25;letter-spacing:-.02em}.agent-content h3{margin:1.7em 0 .55em;font-size:15px}.agent-content h3:first-child{margin-top:0}.prose p,.prose ul,.prose ol,.prose pre,.prose blockquote,.prose table{margin:0 0 1.05em}.prose a{color:var(--accent);text-underline-offset:2px}.prose code{padding:.13em .38em;border-radius:5px;background:#f0f0ed;font: .9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.prose pre{overflow:auto;padding:16px;border-radius:12px;color:#ececf0;background:#202022}.prose pre code{padding:0;color:inherit;background:none}.prose blockquote{margin-left:0;padding-left:15px;border-left:3px solid #a39dec;color:var(--muted)}.prose table{display:block;overflow:auto;border-collapse:collapse}.prose th,.prose td{padding:8px 11px;border:1px solid var(--line);text-align:left}.legacy-panel{padding:32px clamp(22px,5vw,46px)}.legacy-panel h1:first-child{display:none}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#171716;--paper:#232322;--paper-soft:#20201f;--ink:#f1f1ef;--muted:#a4a49f;--faint:#777772;--line:#373735;--accent:#a9a3ff;--accent-soft:#302e4b;--green:#72c99a;--green-soft:#203a2d;--shadow:0 20px 65px rgba(0,0,0,.25)}.raw-link,.agent-panel{background:rgba(35,35,34,.72)}.raw-link:hover{border-color:#4c4c49;background:var(--paper)}.summary-main .audience-icon{background:#30302e}.prose code{background:#30302e}.prose pre{background:#111}.agent-instruction{border-color:#48436d}}@media(max-width:640px){.shell{width:min(100% - 20px,900px);padding-top:18px}.topbar{margin-bottom:32px}.hero{margin-bottom:20px}.hero h1{font-size:1.75rem}.human-panel{padding:24px 20px 30px}.human-content{display:block}.human-content h3{margin-top:24px}.human-content h3:first-child{margin-top:0}.human-content p,.human-content ul{margin-top:0}.agent-panel summary{padding:18px}.agent-body{padding:0 18px 24px}}
 .human-content{display:grid;grid-template-columns:1fr;gap:0}.summary-block{min-width:0;margin:0;padding:22px 0;border-top:1px solid var(--line)}.summary-block:first-child{padding-top:0;border-top:0}.summary-block:last-child{padding-bottom:0}.math-inline{display:inline-block;max-width:100%;vertical-align:-.15em}.math-display{display:block;max-width:100%;margin:1.15em 0;overflow-x:auto;padding:.2em 0;text-align:center}.math-display math{display:inline-block;min-width:max-content;font-size:1.08em}.math-source-display{display:block;overflow-x:auto;padding:.7em}.math-inline math{font-size:1em}
 </style></head><body><div class="shell"><header class="topbar"><a class="brand" href="https://github.com/open-grove/handoff" aria-label="Open OpenGrove Handoff on GitHub"><span class="brand-mark">` + openGroveSaplingSVG + `</span><div>OpenGrove <span>/ Handoff</span></div></a><a class="raw-link" href="./` + id + `.md">Markdown ↗</a></header><main><section class="hero"><h1>` + html.EscapeString(title) + `</h1></section><div class="content">` + content + `</div></main></div></body></html>`
+	if documentMarkdown {
+		page = strings.Replace(page, "</style>", handoffMarkdownEnhancementStyles+"</style>", 1)
+	}
+	return page
 }
 
 func renderMarkdown(markdown string) string {
@@ -609,6 +656,14 @@ func renderMarkdown(markdown string) string {
 }
 
 func renderHumanSummary(markdown string) string {
+	return renderHumanSummaryWith(markdown, renderMarkdown)
+}
+
+func renderHumanSummaryDocument(markdown string) string {
+	return renderHumanSummaryWith(markdown, renderMarkdownDocument)
+}
+
+func renderHumanSummaryWith(markdown string, renderer func(string) string) string {
 	markdown = strings.ReplaceAll(strings.TrimSpace(markdown), "\r\n", "\n")
 	lines := strings.Split(markdown, "\n")
 	type summaryBlock struct {
@@ -626,11 +681,11 @@ func renderHumanSummary(markdown string) string {
 		}
 	}
 	if len(blocks) == 0 {
-		return `<div class="summary-block"><div class="prose">` + renderMarkdown(markdown) + `</div></div>`
+		return `<div class="summary-block"><div class="prose">` + renderer(markdown) + `</div></div>`
 	}
 	var output strings.Builder
 	for _, block := range blocks {
-		fmt.Fprintf(&output, `<section class="summary-block"><h3>%s</h3><div class="prose">%s</div></section>`, html.EscapeString(block.title), renderMarkdown(strings.Join(block.body, "\n")))
+		fmt.Fprintf(&output, `<section class="summary-block"><h3>%s</h3><div class="prose">%s</div></section>`, html.EscapeString(block.title), renderer(strings.Join(block.body, "\n")))
 	}
 	return output.String()
 }
