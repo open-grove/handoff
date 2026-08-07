@@ -79,6 +79,10 @@ Global flags:
 Context sources:
   auto (default), codex, claude, pi, opencode, piped stdin, or --file values.
 
+Agent auto-update:
+  create, receive, context, and session check at most once every 24 hours.
+  Progress goes to stderr; HANDOFF_NO_AUTO_UPDATE=1 disables installation.
+
 Generators:
   agent (default) reuses the current Agent's auth, config, and default model.
   deterministic performs local extraction. cloud requires OpenGrove login.
@@ -196,6 +200,7 @@ var (
 
 func run(args []string) error {
 	pendingNotices = nil
+	originalArgs := append([]string(nil), args...)
 	args, outputFormat, err := extractOutputFormat(args)
 	if err != nil {
 		return err
@@ -214,6 +219,9 @@ func run(args []string) error {
 		return nil
 	}
 	command, commandArgs := root.Args()[0], root.Args()[1:]
+	if maybeAutoUpdate(command, commandArgs, originalArgs) {
+		return nil
+	}
 	if outputFormat == "json" && command != "update" && command != "schema" && command != "skills" && command != "version" && command != "help" {
 		maybeAddUpdateNotice()
 	}
@@ -1434,6 +1442,11 @@ func schemaContract(command string) (map[string]any, error) {
 	meta := func(risk string) map[string]any {
 		return map[string]any{"envelope_version": "1.0", "risk": risk, "danger": risk == "high-risk-write"}
 	}
+	autoUpdateMeta := func(risk string) map[string]any {
+		value := meta(risk)
+		value["agent_auto_update"] = "macOS/Linux Agent invocations check at most once per 24 hours; status is stderr-only, failures do not block, and HANDOFF_NO_AUTO_UPDATE=1 disables it"
+		return value
+	}
 	switch command {
 	case "create":
 		return map[string]any{
@@ -1469,6 +1482,7 @@ func schemaContract(command string) (map[string]any, error) {
 				"cloud_auth":           "requires an active local OpenGrove login; publishing does not require login",
 				"cloud_processing":     "cloud generation temporarily receives canonical sanitized Context and does not persist it unless --attach-context is also set",
 				"context_attachment":   "explicit opt-in; readable messages only, no thinking or tool results; best-effort redaction cannot guarantee removal of every natural-language identifier",
+				"agent_auto_update":    "macOS/Linux Agent invocations check at most once per 24 hours; status is stderr-only, failures do not block, --dry-run skips it, and HANDOFF_NO_AUTO_UPDATE=1 disables it",
 				"legacy":               "--upload-context, --mode, --from, --agent, --include-transcript, --full-session, --stdin, and --compact are accepted temporarily but omitted from the preferred contract",
 			},
 		}, nil
@@ -1482,7 +1496,7 @@ func schemaContract(command string) (map[string]any, error) {
 					"goal":   stringProperty("Optional next goal included in the text response."),
 				},
 			},
-			"outputSchema": localSessionOutputSchema(), "_meta": meta("read"),
+			"outputSchema": localSessionOutputSchema(), "_meta": autoUpdateMeta("read"),
 		}, nil
 	case "receive":
 		return map[string]any{
@@ -1496,7 +1510,7 @@ func schemaContract(command string) (map[string]any, error) {
 					"force":       booleanProperty("Allow overwriting the output file."),
 				},
 			},
-			"outputSchema": receiveOutputSchema(), "_meta": meta("read"),
+			"outputSchema": receiveOutputSchema(), "_meta": autoUpdateMeta("read"),
 		}, nil
 	case "context":
 		return map[string]any{
@@ -1510,7 +1524,7 @@ func schemaContract(command string) (map[string]any, error) {
 					"force":       booleanProperty("Allow overwriting the output file."),
 				},
 			},
-			"outputSchema": contextOutputSchema(), "_meta": meta("read"),
+			"outputSchema": contextOutputSchema(), "_meta": autoUpdateMeta("read"),
 		}, nil
 	case "delete":
 		return map[string]any{
@@ -2095,43 +2109,38 @@ func addDeprecationNotice(message string) {
 }
 
 type updateNoticeCache struct {
-	CheckedAt      time.Time `json:"checked_at"`
-	CurrentVersion string    `json:"current_version"`
-	LatestVersion  string    `json:"latest_version"`
-	ReleaseURL     string    `json:"release_url,omitempty"`
+	CheckedAt             time.Time `json:"checked_at"`
+	CurrentVersion        string    `json:"current_version"`
+	LatestVersion         string    `json:"latest_version"`
+	ReleaseURL            string    `json:"release_url,omitempty"`
+	CheckFailed           bool      `json:"check_failed,omitempty"`
+	AutoUpdateAttemptedAt time.Time `json:"auto_update_attempted_at,omitempty"`
+	AutoUpdateVersion     string    `json:"auto_update_version,omitempty"`
 }
 
 func maybeAddUpdateNotice() {
 	if strings.TrimSpace(os.Getenv("HANDOFF_NO_UPDATE_NOTIFIER")) != "" {
 		return
 	}
-	configPath, err := config.Path()
-	if err != nil {
+	now := time.Now().UTC()
+	if cached, fresh := readUpdateNoticeCache(now); fresh {
+		addCachedUpdateNotice(cached)
 		return
-	}
-	cachePath := filepath.Join(filepath.Dir(configPath), "update-notice.json")
-	var cached updateNoticeCache
-	if data, readErr := os.ReadFile(cachePath); readErr == nil && json.Unmarshal(data, &cached) == nil {
-		if cached.CurrentVersion == version && time.Since(cached.CheckedAt) >= 0 && time.Since(cached.CheckedAt) < 24*time.Hour {
-			addCachedUpdateNotice(cached)
-			return
-		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	result, checkErr := (updater.Client{}).Check(ctx, version)
 	if checkErr != nil {
+		_ = writeUpdateNoticeCache(updateNoticeCache{
+			CheckedAt: now, CurrentVersion: version, LatestVersion: version, CheckFailed: true,
+		})
 		return
 	}
-	cached = updateNoticeCache{
-		CheckedAt: time.Now().UTC(), CurrentVersion: version,
+	cached := updateNoticeCache{
+		CheckedAt: now, CurrentVersion: version,
 		LatestVersion: result.LatestVersion, ReleaseURL: result.ReleaseURL,
 	}
-	if data, marshalErr := json.Marshal(cached); marshalErr == nil {
-		if mkdirErr := os.MkdirAll(filepath.Dir(cachePath), 0o700); mkdirErr == nil {
-			_ = os.WriteFile(cachePath, append(data, '\n'), 0o600)
-		}
-	}
+	_ = writeUpdateNoticeCache(cached)
 	addCachedUpdateNotice(cached)
 }
 

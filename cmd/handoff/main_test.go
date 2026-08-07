@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,8 +12,224 @@ import (
 	"time"
 
 	"github.com/open-grove/handoff/internal/types"
+	"github.com/open-grove/handoff/internal/updater"
 	skillbundle "github.com/open-grove/handoff/skills"
 )
+
+type fakeAutoUpdateClient struct {
+	result     updater.Result
+	checkErr   error
+	applyErr   error
+	checkCalls int
+	applyCalls int
+}
+
+func (client *fakeAutoUpdateClient) Check(context.Context, string) (updater.Result, error) {
+	client.checkCalls++
+	return client.result, client.checkErr
+}
+
+func (client *fakeAutoUpdateClient) Apply(context.Context, updater.Result, string) error {
+	client.applyCalls++
+	return client.applyErr
+}
+
+func TestAgentHandoffAutomaticallyUpdatesAndReexecutesWithoutStdoutNoise(t *testing.T) {
+	client, status := prepareAutoUpdateTest(t, updater.Result{
+		CurrentVersion: version, LatestVersion: "99.0.0", UpdateAvailable: true,
+	})
+	var reexecPath string
+	var reexecArgs, reexecEnvironment []string
+	autoUpdateReexec = func(path string, args, environment []string) error {
+		reexecPath = path
+		reexecArgs = append([]string(nil), args...)
+		reexecEnvironment = append([]string(nil), environment...)
+		return nil
+	}
+	syncCalls := 0
+	autoUpdateSkillSync = func(context.Context, string, string, string) skillSyncResult {
+		syncCalls++
+		return skillSyncResult{Installed: []string{"codex", "claude", "agents"}}
+	}
+
+	original := []string{"--json", "create", "continue"}
+	if handled := maybeAutoUpdate("create", []string{"continue"}, original); !handled {
+		t.Fatal("updated CLI did not take over the command")
+	}
+	if client.checkCalls != 1 || client.applyCalls != 1 || syncCalls != 1 {
+		t.Fatalf("update calls: check=%d apply=%d sync=%d", client.checkCalls, client.applyCalls, syncCalls)
+	}
+	if reexecPath != "/tmp/test-handoff" || strings.Join(reexecArgs, "\x00") != strings.Join(original, "\x00") {
+		t.Fatalf("reexec = %q %#v", reexecPath, reexecArgs)
+	}
+	if !environmentContains(reexecEnvironment, "HANDOFF_AUTO_UPDATE_REEXEC=1") {
+		t.Fatalf("reexec guard missing from environment: %#v", reexecEnvironment)
+	}
+	for _, expected := range []string{"正在自动升级", "已升级到 v99.0.0", "正在继续本次交接"} {
+		if !strings.Contains(status.String(), expected) {
+			t.Fatalf("status missing %q: %s", expected, status.String())
+		}
+	}
+	cachePath, err := updateNoticeCachePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheData, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cache updateNoticeCache
+	if err := json.Unmarshal(cacheData, &cache); err != nil {
+		t.Fatal(err)
+	}
+	if cache.CurrentVersion != "99.0.0" || cache.LatestVersion != "99.0.0" {
+		t.Fatalf("unexpected post-update cache: %#v", cache)
+	}
+}
+
+func TestAgentHandoffUpdateFailureContinuesAndBacksOff(t *testing.T) {
+	client, status := prepareAutoUpdateTest(t, updater.Result{
+		CurrentVersion: version, LatestVersion: "99.0.0", UpdateAvailable: true,
+	})
+	client.applyErr = errors.New("read-only installation")
+	reexecCalls := 0
+	autoUpdateReexec = func(string, []string, []string) error {
+		reexecCalls++
+		return nil
+	}
+
+	if handled := maybeAutoUpdate("receive", []string{"abcdefghijklmnopqrstuv"}, []string{"receive", "abcdefghijklmnopqrstuv"}); handled {
+		t.Fatal("failed update incorrectly consumed the handoff command")
+	}
+	if client.checkCalls != 1 || client.applyCalls != 1 || reexecCalls != 0 {
+		t.Fatalf("first attempt calls: check=%d apply=%d reexec=%d", client.checkCalls, client.applyCalls, reexecCalls)
+	}
+	if !strings.Contains(status.String(), "继续使用 v"+version+" 完成本次交接") {
+		t.Fatalf("missing graceful fallback status: %s", status.String())
+	}
+
+	if handled := maybeAutoUpdate("receive", []string{"abcdefghijklmnopqrstuv"}, []string{"receive", "abcdefghijklmnopqrstuv"}); handled {
+		t.Fatal("backed-off update consumed the handoff command")
+	}
+	if client.checkCalls != 1 || client.applyCalls != 1 {
+		t.Fatalf("failed update was retried immediately: check=%d apply=%d", client.checkCalls, client.applyCalls)
+	}
+}
+
+func TestAgentHandoffUpdateCheckIsCachedAndSilentWhenCurrent(t *testing.T) {
+	client, status := prepareAutoUpdateTest(t, updater.Result{
+		CurrentVersion: version, LatestVersion: version, UpdateAvailable: false,
+	})
+	for range 2 {
+		if handled := maybeAutoUpdate("context", []string{"abcdefghijklmnopqrstuv"}, []string{"context", "abcdefghijklmnopqrstuv"}); handled {
+			t.Fatal("up-to-date check consumed the handoff command")
+		}
+	}
+	if client.checkCalls != 1 || client.applyCalls != 0 {
+		t.Fatalf("cached check calls: check=%d apply=%d", client.checkCalls, client.applyCalls)
+	}
+	if status.Len() != 0 {
+		t.Fatalf("up-to-date check produced user-visible noise: %q", status.String())
+	}
+}
+
+func TestAgentHandoffUpdateCheckFailureIsSilentAndBackedOff(t *testing.T) {
+	client, status := prepareAutoUpdateTest(t, updater.Result{})
+	client.checkErr = errors.New("offline")
+	for range 2 {
+		if handled := maybeAutoUpdate("create", []string{"continue"}, []string{"create", "continue"}); handled {
+			t.Fatal("failed update check consumed the handoff command")
+		}
+	}
+	if client.checkCalls != 1 || client.applyCalls != 0 {
+		t.Fatalf("failed check was not backed off: check=%d apply=%d", client.checkCalls, client.applyCalls)
+	}
+	if status.Len() != 0 {
+		t.Fatalf("failed background check produced user-visible noise: %q", status.String())
+	}
+}
+
+func TestAutoUpdateEligibilityProtectsNonHandoffAndDryRunCommands(t *testing.T) {
+	prepareAutoUpdateEnvironment(t)
+	for _, test := range []struct {
+		command string
+		args    []string
+	}{
+		{command: "update"},
+		{command: "version"},
+		{command: "create"},
+		{command: "create", args: []string{"continue", "--dry-run"}},
+		{command: "create", args: []string{"continue", "--dry-run=true"}},
+		{command: "receive", args: []string{"--help"}},
+		{command: "session", args: []string{"unknown"}},
+	} {
+		if shouldAutoUpdate(test.command, test.args) {
+			t.Fatalf("auto update unexpectedly enabled for %s %#v", test.command, test.args)
+		}
+	}
+	if !shouldAutoUpdate("create", []string{"continue"}) {
+		t.Fatal("Agent create did not enable auto update")
+	}
+	if !shouldAutoUpdate("create", []string{"continue", "--dry-run=false"}) {
+		t.Fatal("explicitly disabled dry-run unexpectedly disabled auto update")
+	}
+	if !shouldAutoUpdate("session", []string{"locate"}) {
+		t.Fatal("Agent session locate did not enable auto update")
+	}
+	t.Setenv("HANDOFF_NO_AUTO_UPDATE", "1")
+	if shouldAutoUpdate("create", []string{"continue"}) {
+		t.Fatal("HANDOFF_NO_AUTO_UPDATE did not disable auto update")
+	}
+}
+
+func prepareAutoUpdateTest(t *testing.T, result updater.Result) (*fakeAutoUpdateClient, *bytes.Buffer) {
+	t.Helper()
+	prepareAutoUpdateEnvironment(t)
+	client := &fakeAutoUpdateClient{result: result}
+	status := &bytes.Buffer{}
+	previousClient := newAutoUpdateClient
+	previousExecutable := autoUpdateExecutable
+	previousReexec := autoUpdateReexec
+	previousSync := autoUpdateSkillSync
+	previousNow := autoUpdateNow
+	previousStderr := autoUpdateStderr
+	newAutoUpdateClient = func() autoUpdateClient { return client }
+	autoUpdateExecutable = func() (string, error) { return "/tmp/test-handoff", nil }
+	autoUpdateSkillSync = func(context.Context, string, string, string) skillSyncResult { return skillSyncResult{} }
+	autoUpdateNow = func() time.Time { return time.Date(2026, time.August, 7, 12, 0, 0, 0, time.UTC) }
+	autoUpdateStderr = status
+	t.Cleanup(func() {
+		newAutoUpdateClient = previousClient
+		autoUpdateExecutable = previousExecutable
+		autoUpdateReexec = previousReexec
+		autoUpdateSkillSync = previousSync
+		autoUpdateNow = previousNow
+		autoUpdateStderr = previousStderr
+	})
+	return client, status
+}
+
+func prepareAutoUpdateEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv("HANDOFF_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	for _, name := range []string{
+		"HANDOFF_NO_AUTO_UPDATE", "HANDOFF_AUTO_UPDATE", "HANDOFF_AUTO_UPDATE_REEXEC",
+		"CODEX_THREAD_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID",
+		"PI_CODING_AGENT_SESSION", "PI_SESSION_ID", "OPENCODE",
+	} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("CODEX_THREAD_ID", "test-thread")
+}
+
+func environmentContains(environment []string, expected string) bool {
+	for _, item := range environment {
+		if item == expected {
+			return true
+		}
+	}
+	return false
+}
 
 func TestParseHandoffRef(t *testing.T) {
 	id := "abcdefghijklmnopqrstuv"
@@ -290,6 +507,9 @@ func TestSchemaContracts(t *testing.T) {
 		t.Fatal("expected unknown schema to fail")
 	}
 	create, _ := schemaContract("create")
+	if create["_meta"].(map[string]any)["agent_auto_update"] == nil {
+		t.Fatal("create schema does not disclose Agent auto-update behavior")
+	}
 	createProperties := create["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	for _, property := range []string{"source", "runtime"} {
 		enum := createProperties[property].(map[string]any)["enum"].([]string)
@@ -325,6 +545,8 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 		!strings.Contains(content, "--generator cloud") ||
 		!strings.Contains(content, "--attach-context") ||
 		!strings.Contains(content, "--source codex|claude|pi|opencode") ||
+		!strings.Contains(content, "automatically perform a cached update preflight") ||
+		!strings.Contains(content, "HANDOFF_NO_AUTO_UPDATE=1") ||
 		!strings.Contains(content, "handoff context <reference>") ||
 		!strings.Contains(content, "handoff session locate") ||
 		strings.Contains(content, "--upload-context selected") ||

@@ -101,4 +101,6 @@ Deletion is irreversible. Confirm the exact Handoff with the user before adding 
 
 If `handoff` is missing, do not pretend a Handoff was read. Point to <https://github.com/open-grove/handoff>. Install or repair the version-matched Skill with `handoff skills install`.
 
-Use `handoff update` for verified updates; it synchronizes unmodified installed Skills with the new CLI and preserves custom Skill content. If the current Agent generator fails, report the warning and deterministic fallback; never silently switch to cloud generation.
+Agent-hosted `create`, `receive`, `context`, and `session` commands automatically perform a cached update preflight on macOS and Linux. When an update exists, the CLI writes maintenance progress to stderr, verifies and atomically replaces itself, synchronizes unmodified installed Skills, preserves custom Skill content, and re-executes the original command. Those maintenance lines are status only: relay the canonical stdout or `share_message`, never the update progress. Update failure never blocks the requested Handoff and is not retried for 24 hours. `--dry-run` skips auto-update; `HANDOFF_NO_AUTO_UPDATE=1` disables it. A running Agent Session does not reload changed Skill instructions, so rely on new Skill behavior from the next Session.
+
+Use `handoff update` for an explicit verified update. If the current Agent generator fails, report the warning and deterministic fallback; never silently switch to cloud generation.

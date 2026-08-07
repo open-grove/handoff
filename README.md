@@ -94,6 +94,8 @@ handoff update --check
 handoff update
 ```
 
+在 Codex、Claude Code、Pi 或 OpenCode 中执行 `create`、`receive`、`context`、`session` 时，CLI 会在真正交接前做一次有 24 小时缓存的更新预检。发现新版后会在 stderr 显示升级进度，完成校验和原子替换后以原参数重新执行本次命令；stdout 始终只保留 Handoff 的正式结果。网络、权限或 Skill 同步问题不会阻断交接，失败后会继续使用当前进程，且 24 小时内不反复尝试。`--dry-run` 不触发自动更新；设置 `HANDOFF_NO_AUTO_UPDATE=1` 可完全关闭。普通终端如需启用同一行为，可设置 `HANDOFF_AUTO_UPDATE=1`。当前自动替换支持 macOS 和 Linux；Windows 仍保留更新提示和手动下载路径。
+
 云端生成使用端到端 SSE：Worker 会立即建立响应，并在等待模型首 token
 期间持续发送心跳，随后逐段转发生成结果。Kimi 的长上下文请求可能需要数分钟，
 CLI 会以 15 分钟为整体边界；普通发布、接收等请求仍使用较短超时。
@@ -154,7 +156,7 @@ handoff doctor
 
 每次匿名发布都会生成一枚独立删除凭证。服务端只存储 SHA-256 哈希，CLI 把原始凭证写入本机权限为 `0600` 的 `ownership.json`，不会打印到分享消息或 `--json` 输出。创建者可直接运行 `handoff delete <code> --yes`；旧分享或其他人创建的分享仍需管理员凭据。
 
-`handoff update` 检测当前系统和架构，从 GitHub Release 下载对应二进制与 `SHA256SUMS`，校验后原子替换当前可执行文件，并同步仍与旧内嵌版本一致的 Skill。用户自定义过的 Skill 不会被覆盖。机器可读命令至多每 24 小时检查一次新版本，并通过 `_notice.update` 返回非阻塞提示；设置 `HANDOFF_NO_UPDATE_NOTIFIER=1` 可关闭。仓库为 private 时会复用 `GH_TOKEN` / `GITHUB_TOKEN` 或本机 `gh auth login`；公开后无需 GitHub 登录。
+`handoff update` 检测当前系统和架构，从 GitHub Release 下载对应二进制与 `SHA256SUMS`，校验后原子替换当前可执行文件，并同步仍与旧内嵌版本一致的 Skill。用户自定义过的 Skill 不会被覆盖。Agent 环境中的实际交接命令默认复用这条校验与替换链路自动升级，然后以原参数重新执行；进度只写 stderr，正式输出不变，失败则继续本次交接。检查与失败重试都以 24 小时为间隔，并用本机锁避免多个 Agent 同时更新。机器可读命令仍可通过 `_notice.update` 返回非阻塞提示；设置 `HANDOFF_NO_AUTO_UPDATE=1` 可关闭自动安装，设置 `HANDOFF_NO_UPDATE_NOTIFIER=1` 可关闭提示。仓库为 private 时会复用 `GH_TOKEN` / `GITHUB_TOKEN` 或本机 `gh auth login`；公开后无需 GitHub 登录。
 
 ## 上下文发现
 
@@ -197,6 +199,7 @@ stdin 超过 4 MiB、Session 中出现损坏的 JSONL 记录、OpenCode 导出�
 - 匿名发布返回的删除凭证是另一枚 256-bit capability，只保存在创建者本机；服务端不保存明文。
 - Cloudflare Worker 对匿名创建按请求来源做每分钟 30 次的宽松限流，降低公开 CLI 后的批量滥用风险；它不是计费额度系统。
 - 当前 Agent 不可用时会生成 deterministic handoff 并明确提示，不会静默改用服务端生成。
+- Agent 发起实际交接前可能自动安装经过 SHA-256 校验的新版本；状态只写 stderr，失败不阻断原命令，`HANDOFF_NO_AUTO_UPDATE=1` 可关闭。
 - 分享 URL 本身就是读取权限，不应发到公开频道。
 - `HANDOFF.md` 是一次不可变快照。发送方和接收方的 Agent 不会共同修改同一份文件；继续工作后再创建下一份 handoff。
 
