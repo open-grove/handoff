@@ -71,6 +71,72 @@ func TestFallbackSectionsKeepsSummaryAndCompleteHistory(t *testing.T) {
 	}
 }
 
+func TestFallbackSectionsBuildsUsefulHumanSummaryFromScopedMarkdown(t *testing.T) {
+	document := `File: author-report.md
+
+# WW 作者数量修正
+
+## 目标
+
+作者数量改为按注册时核销的创作者邀请码统计，不再按 Role 统计。
+
+## 已确认口径
+
+- Role 只用于权限，不能判断是不是作者。
+- 邀请码必须严格匹配：
+  - used_by_user_id 等于用户 ID
+  - used_at 等于用户 created_at
+
+## 当前问题
+
+### 全局报表
+
+当前会把 Vega 供应商误算成作者。
+
+### 编辑报表
+
+仍在读取废弃的 users.role。
+
+## 待修改
+
+1. 修改 ` + "`ww/internal/dashboard/report_mysql.go`" + `。
+2. 修改 ` + "`ww/internal/dashboard/editor_mysql.go`" + ` 并补回归测试。
+
+## 无关内容
+
+这段不应进入给人看的当前情况。`
+	sections := FallbackSections(IntentContinue, "修正作者数量", types.Context{
+		Source:   "file",
+		Messages: []types.Message{{Role: "user", Text: document}},
+	})
+	if !strings.Contains(sections.HumanBackground, "创作者邀请码") {
+		t.Fatalf("human background did not explain the work: %q", sections.HumanBackground)
+	}
+	for _, expected := range []string{"全局报表", "Vega 供应商", "编辑报表", "users.role"} {
+		if !strings.Contains(sections.HumanStatus, expected) {
+			t.Fatalf("human status missing %q: %q", expected, sections.HumanStatus)
+		}
+	}
+	if strings.Contains(sections.HumanStatus, "无关内容") {
+		t.Fatalf("human status included an unrelated section: %q", sections.HumanStatus)
+	}
+	if len(sections.HumanTodos) != 2 || !strings.Contains(sections.HumanTodos[0], "report_mysql.go") {
+		t.Fatalf("human todos were not extracted: %#v", sections.HumanTodos)
+	}
+	if len(sections.Decisions) != 2 || !strings.Contains(sections.Decisions[1], "used_by_user_id") || !strings.Contains(sections.Decisions[1], "used_at") {
+		t.Fatalf("decisions were not extracted with nested details: %#v", sections.Decisions)
+	}
+	for _, expected := range []string{"ww/internal/dashboard/report_mysql.go", "ww/internal/dashboard/editor_mysql.go"} {
+		found := false
+		for _, file := range sections.ImportantFiles {
+			found = found || file == expected
+		}
+		if !found {
+			t.Fatalf("important files missing %q: %#v", expected, sections.ImportantFiles)
+		}
+	}
+}
+
 func TestParseSectionsAcceptsSingletonStringsForListFields(t *testing.T) {
 	sections, err := ParseSections(`{
   "intent":"continue",

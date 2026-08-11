@@ -294,14 +294,125 @@ func TestFormatShareMessageSeparatesHumanAndAgentInstructions(t *testing.T) {
 
 func TestResolveCreateSelectionUsesPreferredVocabulary(t *testing.T) {
 	selection, err := resolveCreateSelection(createSelectionInput{
-		Source: "codex", Generator: "cloud", Runtime: "claude", AttachContext: true,
+		Source: "codex", Generator: "agent", Runtime: "claude", AttachContext: true,
 		Set: map[string]bool{"source": true, "generator": true, "runtime": true, "attach-context": true},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.Source != "codex" || selection.Generator != "cloud" || selection.Runtime != "claude" || !selection.AttachContext || selection.SessionPath || len(selection.Deprecated) != 0 {
+	if selection.Source != "codex" || selection.Generator != "agent" || selection.Runtime != "claude" || !selection.AttachContext || selection.SessionPath || len(selection.Deprecated) != 0 {
 		t.Fatalf("unexpected preferred selection: %#v", selection)
+	}
+}
+
+func TestRuntimeOnlyAppliesToAgentGenerator(t *testing.T) {
+	for _, generator := range []string{"deterministic", "cloud"} {
+		_, err := resolveCreateSelection(createSelectionInput{
+			Source: "auto", Generator: generator, Runtime: "opencode",
+			Set: map[string]bool{"generator": true, "runtime": true},
+		})
+		if err == nil || !strings.Contains(err.Error(), "only selects the local sidecar") {
+			t.Fatalf("%s generator accepted an unrelated runtime: %v", generator, err)
+		}
+	}
+}
+
+func TestSourceSessionCannotBeCombinedWithFileInput(t *testing.T) {
+	err := runCreate("", "text", []string{
+		"Conflicting inputs",
+		"--source", "codex",
+		"--file", filepath.Join(t.TempDir(), "context.md"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "--source selects an Agent Session and cannot be combined with --file") {
+		t.Fatalf("conflicting Session and file inputs were not rejected clearly: %v", err)
+	}
+}
+
+func TestDeterministicGenerationRequiresScopedInputOrReview(t *testing.T) {
+	for _, sourceName := range []string{"codex", "claude", "pi", "opencode"} {
+		err := validateDeterministicScope(types.Context{Source: sourceName}, false)
+		if err == nil || !strings.Contains(err.Error(), "goal does not limit source context") {
+			t.Fatalf("unscoped %s session was accepted: %v", sourceName, err)
+		}
+		if err := validateDeterministicScope(types.Context{Source: sourceName}, true); err != nil {
+			t.Fatalf("reviewed %s session was rejected: %v", sourceName, err)
+		}
+	}
+	for _, sourceName := range []string{"file", "stdin"} {
+		if err := validateDeterministicScope(types.Context{Source: sourceName}, false); err != nil {
+			t.Fatalf("scoped %s input was rejected: %v", sourceName, err)
+		}
+	}
+}
+
+func TestCreateDoesNotPublishDeterministicFallbackWhenAgentGenerationFails(t *testing.T) {
+	t.Setenv("HANDOFF_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("CODEX_THREAD_ID", "test-thread")
+	for _, name := range []string{
+		"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID",
+		"PI_CODING_AGENT_SESSION", "PI_SESSION_ID", "OPENCODE",
+	} {
+		t.Setenv(name, "")
+	}
+
+	fakeBin := t.TempDir()
+	fakeCodex := filepath.Join(fakeBin, "codex")
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\necho 'provider unavailable' >&2\nexit 2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin)
+
+	sourcePath := filepath.Join(t.TempDir(), "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# Source\n\nKnown context.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runCreate("", "text", []string{
+		"Agent generation failure",
+		"--intent", "share",
+		"--file", sourcePath,
+		"--no-git",
+	})
+	if err == nil {
+		t.Fatal("Agent generation failure silently published deterministic output")
+	}
+	for _, expected := range []string{
+		"local Agent sidecar was found but could not generate the handoff",
+		"codex sidecar handoff generation failed",
+		"provider unavailable",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("generation error missing %q: %v", expected, err)
+		}
+	}
+}
+
+func TestCreateDoesNotFallbackWhenExplicitAgentRuntimeIsMissing(t *testing.T) {
+	t.Setenv("HANDOFF_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("PATH", t.TempDir())
+
+	sourcePath := filepath.Join(t.TempDir(), "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# Source\n\nKnown context.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runCreate("", "text", []string{
+		"OpenCode required",
+		"--intent", "share",
+		"--file", sourcePath,
+		"--runtime", "opencode",
+		"--no-git",
+	})
+	if err == nil {
+		t.Fatal("missing explicit OpenCode runtime silently published deterministic output")
+	}
+	for _, expected := range []string{
+		"local Agent sidecar runtime could not be resolved",
+		"requested opencode sidecar CLI was not found",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("runtime resolution error missing %q: %v", expected, err)
+		}
 	}
 }
 
@@ -517,6 +628,12 @@ func TestSchemaContracts(t *testing.T) {
 			t.Fatalf("create schema %s enum does not include OpenCode: %#v", property, enum)
 		}
 	}
+	if description := createProperties["runtime"].(map[string]any)["description"].(string); !strings.Contains(description, "sidecar") || !strings.Contains(description, "never selects the input source or model") {
+		t.Fatalf("runtime schema does not explain the sidecar boundary: %q", description)
+	}
+	if description := createProperties["source"].(map[string]any)["description"].(string); !strings.Contains(description, "input Agent Session") {
+		t.Fatalf("source schema does not explain the input boundary: %q", description)
+	}
 	for _, legacy := range []string{"upload_context", "mode", "from", "agent", "include_transcript", "full_session", "stdin", "compact"} {
 		if _, exists := createProperties[legacy]; exists {
 			t.Fatalf("preferred create schema exposes legacy property %q", legacy)
@@ -545,6 +662,11 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 		!strings.Contains(content, "--generator cloud") ||
 		!strings.Contains(content, "--attach-context") ||
 		!strings.Contains(content, "--source codex|claude|pi|opencode") ||
+		!strings.Contains(content, "Keep these controls separate") ||
+		!strings.Contains(content, "It never chooses the input source or model") ||
+		!strings.Contains(content, "Keep the user interaction smaller than the CLI surface") ||
+		!strings.Contains(content, "Use cloud generation only when the user explicitly requests it") ||
+		!strings.Contains(content, "Add `--attach-context` only when the user explicitly asks") ||
 		!strings.Contains(content, "automatically perform a cached update preflight") ||
 		!strings.Contains(content, "HANDOFF_NO_AUTO_UPDATE=1") ||
 		!strings.Contains(content, "handoff context <reference>") ||

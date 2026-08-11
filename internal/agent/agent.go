@@ -17,7 +17,9 @@ import (
 	"github.com/open-grove/handoff/internal/types"
 )
 
-var runtimes = []string{"codex", "claude", "pi", "opencode"}
+var sidecarRuntimes = []string{"codex", "claude", "pi", "opencode"}
+
+var ErrNoSupportedSidecarRuntime = errors.New("no supported Agent sidecar CLI found")
 
 type Runner struct {
 	LookPath func(string) (string, error)
@@ -25,17 +27,18 @@ type Runner struct {
 	Execute  func(context.Context, string, []string, string, string) (string, error)
 }
 
-// Resolve chooses the Agent hosting this invocation when its environment is
-// visible. Session source is the next-best signal, followed by an installed
-// runtime. requested may explicitly select a runtime but never a model.
+// Resolve chooses the CLI used for a fresh, isolated generation sidecar. It
+// prefers the current Agent host, then the Session source, then any installed
+// supported CLI. requested selects only the sidecar runtime, never the source
+// Session or model.
 func (runner Runner) Resolve(requested, sourceKind string) (string, error) {
 	requested = strings.ToLower(strings.TrimSpace(requested))
 	if requested != "" && requested != "auto" {
 		if !isRuntime(requested) {
-			return "", fmt.Errorf("unknown Agent runtime %q (use auto, codex, claude, pi, or opencode)", requested)
+			return "", fmt.Errorf("unknown Agent sidecar runtime %q (use auto, codex, claude, pi, or opencode)", requested)
 		}
 		if _, err := runner.lookPath()(requested); err != nil {
-			return "", fmt.Errorf("%s CLI was not found", requested)
+			return "", fmt.Errorf("requested %s sidecar CLI was not found", requested)
 		}
 		return requested, nil
 	}
@@ -54,20 +57,20 @@ func (runner Runner) Resolve(requested, sourceKind string) (string, error) {
 	if isRuntime(sourceKind) {
 		return runner.require(sourceKind)
 	}
-	for _, runtime := range runtimes {
+	for _, runtime := range sidecarRuntimes {
 		if _, err := runner.lookPath()(runtime); err == nil {
 			return runtime, nil
 		}
 	}
-	return "", errors.New("no supported Agent CLI found (install Codex, Claude Code, Pi, or OpenCode, or use --generator deterministic)")
+	return "", fmt.Errorf("%w (install Codex, Claude Code, Pi, or OpenCode; deterministic backup is limited to scoped --file/stdin input or a reviewed Session)", ErrNoSupportedSidecarRuntime)
 }
 
-// Generate starts a fresh, ephemeral Agent invocation. It never resumes or
-// mutates the source session and it does not select a model, so the runtime's
+// Generate starts a fresh, ephemeral Agent sidecar. It never resumes or mutates
+// the source Session and it does not select a model, so the chosen runtime's
 // existing auth, provider, and default model remain in effect.
 func (runner Runner) Generate(ctx context.Context, runtime, intent, goal string, source types.Context) (types.Sections, error) {
 	if !isRuntime(runtime) {
-		return types.Sections{}, fmt.Errorf("unsupported Agent runtime %q", runtime)
+		return types.Sections{}, fmt.Errorf("unsupported Agent sidecar runtime %q", runtime)
 	}
 	prompt, err := card.GenerationPrompt(intent, goal, source)
 	if err != nil {
@@ -86,7 +89,7 @@ func (runner Runner) Generate(ctx context.Context, runtime, intent, goal string,
 	}
 	output, err := runner.execute()(ctx, runtime, args, prompt, tempDir)
 	if err != nil {
-		return types.Sections{}, fmt.Errorf("%s handoff generation failed: %w", runtime, err)
+		return types.Sections{}, fmt.Errorf("%s sidecar handoff generation failed: %w", runtime, err)
 	}
 	if runtime == "opencode" {
 		output, err = openCodeRunText(output)
@@ -113,7 +116,7 @@ func runtimeArgs(runtime, tempDir string) ([]string, error) {
 	case "opencode":
 		return []string{"run", "--format", "json", "--pure", "--title", "OpenGrove Handoff generator", "--dir", tempDir}, nil
 	default:
-		return nil, fmt.Errorf("unsupported Agent runtime %q", runtime)
+		return nil, fmt.Errorf("unsupported Agent sidecar runtime %q", runtime)
 	}
 }
 
@@ -134,11 +137,20 @@ func defaultExecute(ctx context.Context, name string, args []string, input, dir 
 	started := time.Now().UTC()
 	runErr := command.Run()
 	var cleanupErr error
-	if filepath.Base(name) == "opencode" {
+	isOpenCode := filepath.Base(name) == "opencode"
+	if isOpenCode {
 		cleanupErr = cleanupOpenCodeGenerationSession(name, dir, started)
 	}
 	if runErr != nil || cleanupErr != nil {
 		detail := strings.TrimSpace(card.Redact(stderr.String()))
+		if isOpenCode {
+			if eventDetail := openCodeErrorDetail(stdout.String()); eventDetail != "" {
+				if detail != "" {
+					detail += "; "
+				}
+				detail += eventDetail
+			}
+		}
 		if len(detail) > 800 {
 			detail = detail[len(detail)-800:]
 		}
@@ -156,6 +168,81 @@ func defaultExecute(ctx context.Context, name string, args []string, input, dir 
 		return "", errors.Join(failures...)
 	}
 	return stdout.String(), nil
+}
+
+// openCodeErrorDetail extracts only structured error events. Never include text
+// events because they may contain generated sections or echoed source Context.
+func openCodeErrorDetail(output string) string {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 64<<10), 8<<20)
+	var details []string
+	for scanner.Scan() {
+		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+			continue
+		}
+		var event map[string]json.RawMessage
+		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+			continue
+		}
+		var eventType string
+		if json.Unmarshal(event["type"], &eventType) != nil || !strings.EqualFold(strings.TrimSpace(eventType), "error") {
+			continue
+		}
+		errorValue, ok := event["error"]
+		if !ok || len(bytes.TrimSpace(errorValue)) == 0 {
+			continue
+		}
+		var structured any
+		if json.Unmarshal(errorValue, &structured) != nil {
+			continue
+		}
+		var fields []string
+		collectOpenCodeErrorFields(structured, &fields)
+		if len(fields) > 0 {
+			details = append(details, "OpenCode error event: "+strings.Join(fields, "; "))
+		}
+	}
+	return strings.Join(details, "; ")
+}
+
+func collectOpenCodeErrorFields(value any, fields *[]string) {
+	if len(*fields) >= 8 {
+		return
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			normalized := strings.ToLower(strings.TrimSpace(key))
+			switch normalized {
+			case "message", "name", "status", "statuscode", "code", "reason":
+				if text := strings.TrimSpace(fmt.Sprint(item)); text != "" && text != "<nil>" {
+					appendUniqueErrorField(fields, key+"="+card.Redact(text))
+				}
+			case "responsebody":
+				if text, ok := item.(string); ok {
+					var response any
+					if json.Unmarshal([]byte(text), &response) == nil {
+						collectOpenCodeErrorFields(response, fields)
+					}
+				}
+			default:
+				collectOpenCodeErrorFields(item, fields)
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			collectOpenCodeErrorFields(item, fields)
+		}
+	}
+}
+
+func appendUniqueErrorField(fields *[]string, value string) {
+	for _, existing := range *fields {
+		if existing == value {
+			return
+		}
+	}
+	*fields = append(*fields, value)
 }
 
 func safeOpenCodeGenerationEnv(environ []string, dir string) ([]string, error) {
@@ -328,7 +415,7 @@ func validOpenCodeSessionID(value string) bool {
 
 func (runner Runner) require(runtime string) (string, error) {
 	if _, err := runner.lookPath()(runtime); err != nil {
-		return "", fmt.Errorf("current Agent is %s, but its CLI was not found", runtime)
+		return "", fmt.Errorf("current Agent host was detected as %s, but its sidecar CLI was not found", runtime)
 	}
 	return runtime, nil
 }
@@ -355,7 +442,7 @@ func (runner Runner) execute() func(context.Context, string, []string, string, s
 }
 
 func isRuntime(value string) bool {
-	for _, runtime := range runtimes {
+	for _, runtime := range sidecarRuntimes {
 		if value == runtime {
 			return true
 		}

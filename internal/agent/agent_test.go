@@ -62,6 +62,21 @@ func TestResolveDetectsOpenCodeEnvironment(t *testing.T) {
 	}
 }
 
+func TestResolveDistinguishesNoAgentFromRequestedRuntimeFailure(t *testing.T) {
+	missing := func(string) (string, error) { return "", errors.New("missing") }
+	runner := Runner{LookPath: missing, Environ: func(string) string { return "" }}
+
+	_, err := runner.Resolve("auto", "file")
+	if !errors.Is(err, ErrNoSupportedSidecarRuntime) {
+		t.Fatalf("no-Agent discovery error is not recognizable: %v", err)
+	}
+
+	_, err = runner.Resolve("opencode", "file")
+	if err == nil || errors.Is(err, ErrNoSupportedSidecarRuntime) || !strings.Contains(err.Error(), "requested opencode sidecar CLI was not found") {
+		t.Fatalf("explicit OpenCode failure was treated as a generic no-Agent fallback: %v", err)
+	}
+}
+
 func TestGenerateUsesEphemeralCodexWithoutModelOverride(t *testing.T) {
 	var gotArgs []string
 	var gotInput string
@@ -105,6 +120,16 @@ func TestGenerateParsesOpenCodeJSONEvents(t *testing.T) {
 	joined := strings.Join(gotArgs, " ")
 	if !strings.Contains(joined, "run --format json --pure") || strings.Contains(joined, "--model") || sections.HumanStatus != "Ready" || sections.Context != "Known" {
 		t.Fatalf("unexpected OpenCode generation: args=%q sections=%#v", gotArgs, sections)
+	}
+}
+
+func TestOpenCodeErrorDetailNeverEchoesTextEvents(t *testing.T) {
+	detail := openCodeErrorDetail(strings.Join([]string{
+		`{"type":"text","part":{"type":"text","text":"SECRET_TRANSCRIPT_CONTENT"}}`,
+		`{"type":"error","error":{"name":"APIError","data":{"message":"model unavailable","requestBody":"SECRET_REQUEST_BODY","responseBody":"{\"error\":{\"status\":\"INVALID_ARGUMENT\",\"message\":\"API key not valid\"}}"}}}`,
+	}, "\n"))
+	if !strings.Contains(detail, "model unavailable") || !strings.Contains(detail, "API key not valid") || strings.Contains(detail, "SECRET_TRANSCRIPT_CONTENT") || strings.Contains(detail, "SECRET_REQUEST_BODY") {
+		t.Fatalf("unsafe or incomplete OpenCode error detail: %q", detail)
 	}
 }
 
@@ -154,6 +179,37 @@ func TestRuntimeArgsNeverResumeOrSelectAModel(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Run this opt-in test against an installed CLI with, for example:
+// HANDOFF_LIVE_AGENT_RUNTIME=codex go test ./internal/agent -run TestLiveSidecarGeneration -v -count=1
+// Provider credentials and the default model come from that CLI's existing
+// environment/configuration; the test never reads or prints them.
+func TestLiveSidecarGeneration(t *testing.T) {
+	runtime := strings.ToLower(strings.TrimSpace(os.Getenv("HANDOFF_LIVE_AGENT_RUNTIME")))
+	if runtime == "" {
+		t.Skip("set HANDOFF_LIVE_AGENT_RUNTIME to codex, claude, pi, or opencode")
+	}
+	if !isRuntime(runtime) {
+		t.Fatalf("unsupported live sidecar runtime %q", runtime)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	sections, err := (Runner{}).Generate(ctx, runtime, "continue", "Continue Project Atlas", types.Context{
+		Source: "file",
+		Messages: []types.Message{
+			{Role: "user", Text: "Prepare a handoff for Project Atlas. The parser update is complete. The remaining task is to add the release note."},
+			{Role: "assistant", Text: "Confirmed: keep the parser behavior and add one release note next. No files need to be changed during handoff generation."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("%s live sidecar generation failed: %v", runtime, err)
+	}
+	if sections.Intent != "continue" || strings.TrimSpace(sections.Context) == "" || strings.TrimSpace(sections.CurrentState) == "" || len(sections.NextSteps) == 0 {
+		t.Fatalf("%s returned incomplete continue sections: intent=%q context=%t current_state=%t next_steps=%d", runtime, sections.Intent, strings.TrimSpace(sections.Context) != "", strings.TrimSpace(sections.CurrentState) != "", len(sections.NextSteps))
+	}
+	t.Logf("%s sidecar returned a valid continue handoff (%d next step(s))", runtime, len(sections.NextSteps))
 }
 
 func TestCleanupOpenCodeGenerationSessionDeletesOnlyVerifiedTempSession(t *testing.T) {

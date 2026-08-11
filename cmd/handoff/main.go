@@ -79,13 +79,28 @@ Global flags:
 Context sources:
   auto (default), codex, claude, pi, opencode, piped stdin, or --file values.
 
+Create pipeline:
+  source -> sanitized Canonical Context -> generator -> immutable Handoff
+  source chooses input only. generator chooses who writes the structured sections.
+  With generator=agent, runtime chooses the fresh local sidecar CLI only.
+  --attach-context independently controls whether Canonical Context is stored.
+
+Agent interaction:
+  Infer share vs continue; ask only when material ambiguity remains.
+  Default to local agent generation and no Context attachment.
+  Cloud generation and Context attachment require an explicit user request.
+  Resolve source/runtime automatically; do not present them as a questionnaire.
+
 Agent auto-update:
   create, receive, context, and session check at most once every 24 hours.
   Progress goes to stderr; HANDOFF_NO_AUTO_UPDATE=1 disables installation.
 
 Generators:
-  agent (default) reuses the current Agent's auth, config, and default model.
-  deterministic performs local extraction. cloud requires OpenGrove login.
+  agent (default) starts a fresh sidecar matching the current Agent host. It
+  reuses that CLI's auth, config, and default model without resuming the source.
+  deterministic is a limited backup when no local Agent CLI is available.
+  It expects scoped --file/stdin content; full Agent Sessions require --review.
+  cloud requires OpenGrove login.
   --attach-context independently stores the full sanitized readable context.
   The source session is always read-only and is never compacted or resumed.
 `
@@ -97,17 +112,23 @@ Usage:
 
 Preferred flags:
   --intent auto|share|continue            Artifact intent (default: auto)
-  --generator agent|deterministic|cloud   Generation strategy (default: agent)
-  --source auto|codex|claude|pi|opencode  Context source (default: auto)
-  --runtime auto|codex|claude|pi|opencode Agent runtime; never selects a model
-  --attach-context                        Store full sanitized readable context
-  --file PATH                             Context file; repeatable
+  --source auto|codex|claude|pi|opencode  Input Session only (default: auto)
+  --file PATH                             Input files instead of a Session; repeatable
+  --generator agent|deterministic|cloud   Who writes sections (default: agent)
+  --runtime auto|codex|claude|pi|opencode Local sidecar for agent generator only
+  --attach-context                        Persist full Canonical Context independently
   --review                                Edit generated Markdown before publish
   --dry-run                               Inspect without Agent or network write
   --output PATH                           Also write HANDOFF.md
   --force                                 Overwrite --output
   --no-git                                Omit repository metadata
   --ttl DURATION                          Lifetime (default: 168h)
+
+Generator note:
+  agent starts a fresh isolated sidecar; it never resumes or compacts the source.
+  runtime selects only that sidecar, never the input source or model.
+  deterministic is a limited no-sidecar backup, not the normal generation path.
+  Use scoped --file/stdin input, or --review for a full Agent Session.
 
 Risk: write
 
@@ -282,11 +303,11 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	flags := flag.NewFlagSet("handoff create", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	flags.Usage = func() { fmt.Fprint(os.Stdout, createUsage) }
-	sourceName := flags.String("source", "auto", "context source: auto, codex, claude, pi, or opencode")
+	sourceName := flags.String("source", "auto", "input Session source only: auto, codex, claude, pi, or opencode")
 	intentName := flags.String("intent", "auto", "artifact intent: auto, share, or continue")
-	generatorName := flags.String("generator", "agent", "generator: agent, deterministic, or cloud")
-	runtimeName := flags.String("runtime", "auto", "Agent runtime: auto, codex, claude, pi, or opencode (never selects a model)")
-	attachContext := flags.Bool("attach-context", false, "store full sanitized readable context beside the handoff")
+	generatorName := flags.String("generator", "agent", "section generator: agent sidecar, deterministic, or cloud")
+	runtimeName := flags.String("runtime", "auto", "local sidecar CLI for the agent generator only; never selects the source or model")
+	attachContext := flags.Bool("attach-context", false, "persist full Canonical Context independently of generation")
 	uploadContext := flags.String("upload-context", "", "deprecated cloud upload acknowledgement: selected or full")
 	legacyFrom := flags.String("from", "auto", "deprecated alias for --source")
 	legacyMode := flags.String("mode", "agent", "deprecated generator alias: agent, local, server, or session")
@@ -352,6 +373,12 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		if err != nil {
 			return err
 		}
+		if selection.Source != "auto" && len(files) > 0 {
+			return errors.New("--source selects an Agent Session and cannot be combined with --file; omit --source when files are the input")
+		}
+		if selection.Source != "auto" && readStdin {
+			return errors.New("--source selects an Agent Session and cannot be combined with piped stdin; omit --source when stdin is the input")
+		}
 	}
 	contextSource, err := source.Load(source.Options{
 		Kind:      selection.Source,
@@ -396,9 +423,9 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		}
 	}
 	if *dryRun {
-		resolvedAgent := ""
+		resolvedSidecar := ""
 		if selection.Generator == "agent" {
-			resolvedAgent, _ = (agentruntime.Runner{}).Resolve(selection.Runtime, contextSource.Source)
+			resolvedSidecar, _ = (agentruntime.Runner{}).Resolve(selection.Runtime, contextSource.Source)
 		}
 		return printJSON(map[string]any{
 			"dry_run":                  true,
@@ -411,7 +438,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 			"characters":               contextCharacters(contextSource),
 			"repository":               contextSource.Repo,
 			"generator":                selection.Generator,
-			"runtime":                  resolvedAgent,
+			"runtime":                  resolvedSidecar,
 			"native_compact_found":     contextSource.NativeCompactFound,
 			"native_summary_auxiliary": strings.TrimSpace(contextSource.Summary) != "",
 			"attach_context":           selection.AttachContext,
@@ -421,6 +448,11 @@ func runCreate(profileName, outputFormat string, args []string) error {
 			"review":                   *review,
 			"ttl_seconds":              int64(ttl.Seconds()),
 		})
+	}
+	if selection.Generator == "deterministic" {
+		if err := validateDeterministicScope(contextSource, *review); err != nil {
+			return err
+		}
 	}
 	_, profile, err := loadProfile(profileName)
 	if err != nil {
@@ -441,9 +473,15 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		runner := agentruntime.Runner{}
 		runtime, resolveErr := runner.Resolve(selection.Runtime, contextSource.Source)
 		if resolveErr != nil {
+			if !errors.Is(resolveErr, agentruntime.ErrNoSupportedSidecarRuntime) {
+				return fmt.Errorf("local Agent sidecar runtime could not be resolved: %w", resolveErr)
+			}
 			generationWarning = resolveErr
+			if scopeErr := validateDeterministicScope(contextSource, *review); scopeErr != nil {
+				return fmt.Errorf("Agent generation failed: %v; %w", resolveErr, scopeErr)
+			}
 		} else if generated, generateErr := runner.Generate(ctx, runtime, intent, goal, contextSource); generateErr != nil {
-			generationWarning = generateErr
+			return fmt.Errorf("local Agent sidecar was found but could not generate the handoff; deterministic backup is only used when no supported sidecar CLI is available: %w", generateErr)
 		} else {
 			sections = generated
 			generator = "agent:" + runtime
@@ -519,10 +557,10 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		fmt.Println("Delete: private credential saved locally")
 	}
 	if generationWarning != nil {
-		fmt.Println("Note:   requested generator was unavailable; used deterministic local extraction")
+		fmt.Println("Backup: no supported local Agent sidecar CLI was available; used limited deterministic extraction")
 		fmt.Println("Cause:  " + generationWarning.Error())
 	} else if result.Handoff.Generator == "deterministic" {
-		fmt.Println("Note:   deterministic local extraction was used")
+		fmt.Println("Note:   limited deterministic extraction was explicitly selected; it is intended as a no-Agent backup")
 	}
 	if *output != "" {
 		absolute, _ := filepath.Abs(*output)
@@ -539,6 +577,21 @@ func validateServerPreview(preview types.CompactPreviewResponse) error {
 		return fmt.Errorf("cloud generation failed: unexpected generator %q", preview.Generator)
 	}
 	return nil
+}
+
+func validateDeterministicScope(contextSource types.Context, review bool) error {
+	if review {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(contextSource.Source)) {
+	case "codex", "claude", "pi", "opencode":
+		return fmt.Errorf(
+			"refusing to publish deterministic extraction from the full %s Agent Session because the goal does not limit source context; provide scoped content with --file or stdin, or add --review to inspect and edit before publishing",
+			contextSource.Source,
+		)
+	default:
+		return nil
+	}
 }
 
 func formatShareMessage(result types.CreateResponse) string {
@@ -703,6 +756,9 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 	}
 	if input.Set["stdin"] {
 		selection.Deprecated = append(selection.Deprecated, "--stdin is deprecated; pipe input without the flag")
+	}
+	if selection.Generator != "agent" && selection.Runtime != "auto" && input.Set["runtime"] {
+		return createSelection{}, fmt.Errorf("--runtime only selects the local sidecar for --generator agent; it cannot be used with --generator %s", selection.Generator)
 	}
 	return selection, nil
 }
@@ -1457,12 +1513,12 @@ func schemaContract(command string) (map[string]any, error) {
 				"properties": map[string]any{
 					"goal":           stringProperty("Short topic for share intent or next goal for continue intent."),
 					"intent":         map[string]any{"type": "string", "enum": []string{"auto", "share", "continue"}, "default": "auto", "description": "Choose a discussion-result share or resumable task handoff."},
-					"source":         map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto"},
-					"generator":      map[string]any{"type": "string", "enum": []string{"agent", "deterministic", "cloud"}, "default": "agent"},
-					"runtime":        map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto", "description": "Selects an Agent runtime, never a model."},
+					"source":         map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto", "description": "Select only the input Agent Session. Do not combine a non-auto value with file or piped stdin input."},
+					"generator":      map[string]any{"type": "string", "enum": []string{"agent", "deterministic", "cloud"}, "default": "agent", "description": "Choose who writes the structured sections. agent starts a fresh isolated local sidecar; deterministic is a limited no-sidecar backup; cloud uses transient OpenGrove generation."},
+					"runtime":        map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto", "description": "Select only the fresh local sidecar CLI used by generator=agent. It never selects the input source or model and must remain auto for other generators."},
 					"attach_context": booleanProperty("Persist the complete sanitized readable Context beside the handoff, independently of the generator."),
 					"review":         booleanProperty("Edit generated Markdown before publishing."),
-					"file":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable context file path."},
+					"file":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable input context file path. Files replace Agent Session discovery, so leave source=auto."},
 					"no_git":         booleanProperty("Omit repository metadata."),
 					"ttl":            map[string]any{"type": "string", "default": "168h", "description": "Go duration for the handoff lifetime."},
 					"json":           booleanProperty("Print machine-readable output."),
@@ -1476,12 +1532,13 @@ func schemaContract(command string) (map[string]any, error) {
 				"envelope_version": "1.0", "risk": "write", "danger": false,
 				"session":              "read-only snapshot; never compacted, resumed, or modified",
 				"default_upload":       "generated sections only; --attach-context is the explicit persistence boundary",
-				"default_model_config": "inherits the current Agent runtime",
+				"default_model_config": "the local sidecar inherits its CLI's existing provider and default model; --runtime never selects either",
 				"canonical_context":    "all readable user/assistant messages after normalization and best-effort redaction; excludes thinking and tool results",
 				"native_compact":       "a readable native compact summary is auxiliary evidence; it never replaces the canonical message history and native /compact is never invoked",
 				"cloud_auth":           "requires an active local OpenGrove login; publishing does not require login",
 				"cloud_processing":     "cloud generation temporarily receives canonical sanitized Context and does not persist it unless --attach-context is also set",
 				"context_attachment":   "explicit opt-in; readable messages only, no thinking or tool results; best-effort redaction cannot guarantee removal of every natural-language identifier",
+				"agent_interaction":    "infer share vs continue and ask only on material ambiguity; default to local agent generation with no Context attachment; cloud and attachment require explicit user request; source/runtime are internal auto-routing",
 				"agent_auto_update":    "macOS/Linux Agent invocations check at most once per 24 hours; status is stderr-only, failures do not block, --dry-run skips it, and HANDOFF_NO_AUTO_UPDATE=1 disables it",
 				"legacy":               "--upload-context, --mode, --from, --agent, --include-transcript, --full-session, --stdin, and --compact are accepted temporarily but omitted from the preferred contract",
 			},
@@ -1579,7 +1636,7 @@ func schemaContract(command string) (map[string]any, error) {
 			"server":  map[string]any{"type": "string", "format": "uri"},
 		}, "profile", "server")), nil
 	case "doctor":
-		return commandContractWithOutput("handoff doctor", "Check session discovery, current Agent, OpenGrove login, and service connectivity.", "read", map[string]any{
+		return commandContractWithOutput("handoff doctor", "Check Session discovery, current Agent host and sidecar CLI, OpenGrove login, and service connectivity.", "read", map[string]any{
 			"offline": booleanProperty("Skip service connectivity."),
 		}, nil, objectSchema(map[string]any{
 			"ok": map[string]any{"type": "boolean"},
@@ -1683,11 +1740,11 @@ func createOutputSchema() map[string]any {
 	}
 	properties["fallback_used"] = map[string]any{
 		"type":        "boolean",
-		"description": "True when the requested Agent generator failed and deterministic extraction was used.",
+		"description": "True only when no supported local Agent sidecar CLI was available and deterministic backup extraction was used.",
 	}
 	properties["generation_warning"] = map[string]any{
 		"type":        "string",
-		"description": "Redacted Agent generation failure when fallback_used is true.",
+		"description": "Redacted local Agent sidecar discovery failure when fallback_used is true.",
 	}
 	handoffOutput["required"] = []string{"handoff", "share_url", "markdown_url", "agent_reference", "share_message", "delete_credential_saved", "fallback_used"}
 	return handoffOutput

@@ -13,13 +13,25 @@
             │           │
             │           └── --attach-context（可选持久化）
             ▼
- agent / cloud / deterministic 生成结构化 sections
+ agent / cloud 生成结构化 sections
+        （本机无 Agent 时才使用 deterministic 备用提取）
             │
             ▼
  handoffd 存储 / 分享 HANDOFF.md（默认只存 sections）
 ```
 
-默认不需要配置模型、API key、provider 或模型地址。比如从 Codex 中调用时，CLI 会执行一次全新的 `codex exec --ephemeral`；它沿用 Codex 已有认证与默认模型，但不会 resume、compact 或改写来源 Session。Claude Code 和 Pi 使用同样的无状态子调用思路。OpenCode 会在独立临时目录创建生成 Session，并仅在目录、创建时间和 Session ID 都验证通过后删除这一枚临时 Session。默认 generator 是 `agent`，不是原生 `/compact`。
+四个控制面各司其职：
+
+| 参数 | 只负责什么 | 不负责什么 |
+|---|---|---|
+| `--source` / `--file` / stdin | 选择输入：Agent Session、文件或管道内容 | 不选生成 Agent、provider 或模型 |
+| `--generator` | 选择谁写结构化 sections：本机 Agent 旁路、有限 deterministic 提取或云端生成 | 不决定是否持久化完整 Context |
+| `--runtime` | 仅在 `--generator agent` 时选择启动哪个本机 Agent CLI 作为旁路 | 不选输入来源、provider 或模型 |
+| `--attach-context` | 独立决定是否把完整脱敏 Canonical Context 作为附件持久化 | 不改变 sections 的生成方式 |
+
+普通调用一个都不用设：`source=auto`、`generator=agent`、`runtime=auto`、默认不附完整 Context。CLI 会只读发现来源 Session，再启动一次全新、隔离的本机 Agent 旁路来生成 sections。比如从 Codex 中调用时，它会执行 `codex exec --ephemeral`；这个旁路沿用 Codex 已有认证、配置、provider 和默认模型，却不会 resume、compact 或改写来源 Session。Claude Code 和 Pi 使用同样的无状态旁路思路。OpenCode 会在独立临时目录创建生成 Session，并仅在目录、创建时间和 Session ID 都验证通过后删除这一枚临时 Session。`agent:<runtime>` 只是生成来源标记，不表示共享或继续了原 Agent Session。默认 generator 是 `agent`，不是原生 `/compact`。
+
+面向用户的交互不应等于 CLI 参数列表。Agent 优先从请求里推断 `share` 还是 `continue`；只有两者真的无法判断、且会实质改变交接内容时才追问。云端生成默认关闭，完整可读 Context 附件也默认关闭，两者都只在用户明确要求时打开；这个附件是脱敏后的 Canonical Context，不是原始 provider Session。`source` 和 `runtime` 属于 Agent/CLI 的内部自动路由，不应作为常规问题抛给用户；只有 `--dry-run` 确认发现错误时才覆盖。交接范围、需排除的对话、接收者或预期结果不清晰时，Agent 也只在这些歧义会改变成品时追问。`--review`、TTL 和输出路径都是可选操作项，不是创建 Handoff 前的必答题。
 
 ## 用起来
 
@@ -55,8 +67,10 @@ handoff create "继续完成 MCP App 兼容性修复" --intent continue
 # 可选：生成后在编辑器里检查 Markdown，保存关闭后才发布
 handoff create "continue" --review
 
-# 可选：不调用 Agent，使用确定性本地提取
-handoff create "continue" --generator deterministic
+# 本机没有 Codex / Claude / Pi / OpenCode CLI 时：
+# 对已收窄范围的文件或 stdin，默认命令会明确提示并使用 deterministic 备用提取
+handoff create "continue" --file ./handoff-notes.md
+some-agent-export | handoff create "continue"
 
 # 可选：交给云端 Kimi K3 生成
 # 这会临时发送完整 Canonical Context，仅 cloud generator 要求 OpenGrove 登录
@@ -150,7 +164,7 @@ handoff doctor
 
 所有命令都接受 `--json` 或 `--format text|json`，参数放在命令前后均可。写文件默认不覆盖，显式加 `--force` 才会覆盖。裸分享码默认从 OpenGrove 线上服务读取；profile、`HANDOFF_SERVER` 或完整 URL 可以覆盖服务地址。
 
-`create --json` 额外返回 `agent_reference`、`share_message` 和 `fallback_used`。Agent 生成失败并退回确定性提取时，`fallback_used` 为 `true`，同时返回脱敏后的 `generation_warning`。稳定引用格式为 `opengrove-handoff:<code>`；调用 Handoff 的 Agent 应原样转发 `share_message`，不能自行改成列表、重命名链接或改写安装提示。文本模式直接输出同一份标准分享消息。
+`create --json` 额外返回 `agent_reference`、`share_message` 和 `fallback_used`。只有本机找不到受支持的 Agent CLI，并且输入已经通过 `--file` 或 stdin 收窄时，CLI 才会使用 deterministic 备用提取；此时 `fallback_used` 为 `true`，同时返回脱敏后的 Agent 发现错误。Agent CLI 已存在但调用、认证或内容生成失败时，命令直接报错，不用低质量结果掩盖真实故障。如果备用来源是完整 Agent Session，CLI 也会拒绝直接发布，要求改用 `--file` / stdin，或加 `--review` 人工检查。稳定引用格式为 `opengrove-handoff:<code>`；调用 Handoff 的 Agent 应原样转发 `share_message`，不能自行改成列表、重命名链接或改写安装提示。文本模式直接输出同一份标准分享消息。
 
 传给 `handoff create` 的位置参数应是短主题（`share`）或短任务目标（`continue`），不要把整段进展说明塞进标题。服务端还会从第一个完整分句生成独立 `title`，并限制为最多 64 个视觉列（约 32 个汉字或 64 个英文字符）；完整主题或目标仍保留在 Agent 层。
 
@@ -177,20 +191,22 @@ CLI 总是构造同一份 Canonical Context：有效的可读 user / assistant �
 
 `handoff create ... --dry-run` 会显示消息数、字符数、`native_compact_found`、是否存在辅助 summary，以及生成阶段与发布阶段各自会发送什么。
 
+deterministic 不是正常生成模式，而是本机没有可用 Agent CLI 时的有限备用方案。它不会用位置参数里的短主题去猜整段 Session 中“哪一部分才相关”；直接读取完整 Codex / Claude / Pi / OpenCode Session 时必须配合 `--review`，更稳妥的用法是先把本次交接整理到 `--file` 或 stdin。对于结构化 Markdown，它会识别“目标/背景”“已确认口径/结论”“当前问题/现状”“待修改/下一步”等章节，并把反引号中的仓库相对路径放进 `Important Files`。
+
 stdin 超过 4 MiB、Session 中出现损坏的 JSONL 记录、OpenCode 导出不是合法 JSON 或原始导出超过 64 MiB 本地解析上限时，CLI 会明确报错，不会把前半段当成完整上下文继续发布。确定性提取会同时保留辅助 summary 和全部已筛选消息；若最终发布体超过服务端上限，则发布会明确失败。
 
 `--attach-context` 与 generator 完全独立。它把 Canonical Context 作为单独附件持久化到 Handoff 生命周期结束；默认不开启。附件不包含 thinking、tool result、Provider 内部记录、本机 Session 路径、Session ID 或 cursor。上传前会清除已知密钥、私钥、本机用户名路径、邮箱和 IP，但这是 best-effort 规则，无法保证识别自然语言里的全部个人信息。超过 4 MiB 的发布请求会明确失败，不会静默截断。Cloudflare 部署把小型交接卡放在 D1 主表，把可选完整 Context 拆成远低于 D1 单行限制的私有分块，并只经 Worker 的 capability URL 重组读取。
 
 `handoff session locate` 是另一条完全本地的路径：CLI 只输出匹配到的 Codex / Claude / Pi 原始 Session 文件绝对路径，不调用模型、不访问 Handoff 服务，也不产生分享码；接收 Agent 必须运行在同一台机器上。OpenCode 使用数据库存储，不存在可安全交付的单 Session 文件，因此不支持这条路径；需要便携的完整可读对话时，使用 `handoff create ... --source opencode --attach-context`。原始 Session 可能含工具数据和 provider 元数据，不应发送到公开渠道。
 
-`--generator agent` 是默认值。`--runtime auto` 会优先识别正在承载命令的 Agent，其次使用 Session 来源；也可用 `--runtime codex|claude|pi|opencode` 解决特殊终端环境里的识别问题。这个参数只选择运行时，始终不选择模型。旧的 `--upload-context`、`--mode`、`--from`、`--agent`、`--include-transcript`、`--full-session`、`--stdin` 和 `--compact` 暂时只做兼容解析，不再出现在首选 schema 中；旧 `selected/full` 都不会隐式创建 Context 附件。
+`--generator agent` 是默认值。`--runtime auto` 会优先识别正在承载命令的 Agent host，其次使用 Session 来源，然后在已安装 CLI 中选择；它选中的只是“新启动哪个旁路 CLI”。仅当 host 识别错误或用户明确指定不同旁路时，才使用 `--runtime codex|claude|pi|opencode`；它只能与 `--generator agent` 一起使用，也始终不选择输入来源、provider 或模型。非 `auto` 的 `--source` 只选 Agent Session，不能与 `--file` 或 stdin 同用。旧的 `--upload-context`、`--mode`、`--from`、`--agent`、`--include-transcript`、`--full-session`、`--stdin` 和 `--compact` 暂时只做兼容解析，不再出现在首选 schema 中；旧 `selected/full` 都不会隐式创建 Context 附件。
 
 ## 隐私与故障降级
 
 - CLI 在调用当前 Agent 前先脱敏：API key、Bearer token、密码、私钥块会被替换；服务端会再次清理最终 sections。
 - `Important Files` 只保留仓库相对路径；本机绝对路径和仓库外文件会被移除。
 - 默认 `agent` 和 `deterministic` generator 下，handoffd 只收到最终 sections；只有显式 `--attach-context` 才会额外收到并持久化 Canonical Context。
-- `agent` generator 由本机当前 Agent CLI 发起。如果该 Agent 使用云模型，脱敏后的上下文仍会发送给它已配置的模型服务商，但不会另发给 handoffd 的模型。
+- `agent` generator 由选中的本机 Agent 旁路 CLI 发起。如果该 CLI 使用云模型，脱敏后的上下文仍会发送给它已配置的模型服务商，但不会另发给 handoffd 的模型。
 - OpenCode agent generator 会强制关闭 OpenCode 自动分享并拒绝工具权限；生成后仅删除经过目录、创建时间与 ID 三重校验的临时 Session，来源 Session 始终只读。
 - `cloud` generator 会把 Canonical Context 临时交给 handoffd 的模型生成 preview；该生成接口不存储原文。是否持久化仍只由独立的 `--attach-context` 决定。
 - `cloud` generator 要求本机 OpenGrove 已登录；CLI 只读取短期 access token，服务端会向 OpenGrove 账户服务校验。普通发布和接收无需登录。
@@ -198,7 +214,7 @@ stdin 超过 4 MiB、Session 中出现损坏的 JSONL 记录、OpenCode 导出�
 - 分享 ID 是 128-bit 随机 capability，默认 7 天过期，可以提前删除。
 - 匿名发布返回的删除凭证是另一枚 256-bit capability，只保存在创建者本机；服务端不保存明文。
 - Cloudflare Worker 对匿名创建按请求来源做每分钟 30 次的宽松限流，降低公开 CLI 后的批量滥用风险；它不是计费额度系统。
-- 当前 Agent 不可用时会生成 deterministic handoff 并明确提示，不会静默改用服务端生成。
+- 只有本机找不到受支持的 Agent CLI，且来源已通过 `--file` 或 stdin 收窄时，才会使用 deterministic 备用提取并明确提示。Agent 已找到但生成失败时直接报错；完整 Agent Session 则要求收窄输入或使用 `--review`。任何情况都不会静默改用服务端生成。
 - Agent 发起实际交接前可能自动安装经过 SHA-256 校验的新版本；状态只写 stderr，失败不阻断原命令，`HANDOFF_NO_AUTO_UPDATE=1` 可关闭。
 - 分享 URL 本身就是读取权限，不应发到公开频道。
 - `HANDOFF.md` 是一次不可变快照。发送方和接收方的 Agent 不会共同修改同一份文件；继续工作后再创建下一份 handoff。

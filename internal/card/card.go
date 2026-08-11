@@ -44,6 +44,9 @@ var homePathPatterns = []*regexp.Regexp{
 
 var emailPattern = regexp.MustCompile(`(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b`)
 var ipAddressPattern = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
+var deterministicHeadingPattern = regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*$`)
+var deterministicListItemPattern = regexp.MustCompile(`^([ \t]*)(?:[-*+]|[0-9]+[.)])\s+(.+?)\s*$`)
+var deterministicInlineCodePattern = regexp.MustCompile("`([^`\\r\\n]+)`")
 
 var markdownRenderer = goldmark.New(goldmark.WithExtensions(extension.GFM))
 
@@ -841,18 +844,180 @@ func FallbackSections(intent, goal string, source types.Context) Sections {
 			OpenQuestions:  []string{},
 		}
 	}
+	document := deterministicDocument(source)
+	background := deterministicMarkdownSection(document, "目标", "背景", "项目背景", "Goal", "Background", "Project Background")
+	if background == "" {
+		background = "这份交接用于继续完成：" + valueOrUnknown(goal) + "。"
+	}
+	status := deterministicMarkdownSection(document, "当前问题", "当前情况", "现状", "状态", "Current Problems", "Current Situation", "Current State", "Status")
+	if status == "" {
+		status = deterministicDocumentExcerpt(document, 1_200)
+	}
+	if status == "" {
+		status = state
+	}
+	todos := deterministicMarkdownList(deterministicMarkdownSection(document, "待修改", "待办事项", "下一步", "Todos", "Tasks", "Next Steps"))
+	if len(todos) == 0 {
+		todos = []string{goal}
+	}
+	decisions := deterministicMarkdownList(deterministicMarkdownSection(document, "已确认口径", "已确认结论", "结论", "决策", "Confirmed Decisions", "Conclusions", "Conclusion", "Decisions"))
+	openQuestions := deterministicMarkdownList(deterministicMarkdownSection(document, "待确认", "未决问题", "开放问题", "Pending Questions", "Open Questions", "Questions"))
 	return Sections{
 		Intent:          intent,
-		HumanBackground: "这份交接用于继续完成：" + valueOrUnknown(goal) + "。",
-		HumanStatus:     state,
-		HumanTodos:      []string{goal},
+		HumanBackground: background,
+		HumanStatus:     demoteMarkdownHeadings(status),
+		HumanTodos:      append([]string(nil), todos...),
 		Context:         contextText,
-		Decisions:       []string{},
-		CurrentState:    state,
-		ImportantFiles:  append([]string(nil), source.Repo.ChangedFiles...),
-		NextSteps:       []string{goal},
-		OpenQuestions:   []string{},
+		Decisions:       decisions,
+		CurrentState:    status,
+		ImportantFiles:  deterministicImportantFiles(document, source.Repo.ChangedFiles),
+		NextSteps:       append([]string(nil), todos...),
+		OpenQuestions:   openQuestions,
 	}
+}
+
+func deterministicDocument(source types.Context) string {
+	parts := make([]string, 0, len(source.Messages)+1)
+	for _, message := range source.Messages {
+		text := strings.TrimSpace(message.Text)
+		if source.Source == "file" && strings.HasPrefix(text, "File: ") {
+			if separator := strings.Index(text, "\n\n"); separator >= 0 {
+				text = strings.TrimSpace(text[separator+2:])
+			}
+		}
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) == 0 && strings.TrimSpace(source.Summary) != "" {
+		parts = append(parts, strings.TrimSpace(source.Summary))
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func deterministicMarkdownSection(document string, titles ...string) string {
+	if strings.TrimSpace(document) == "" {
+		return ""
+	}
+	wanted := make(map[string]struct{}, len(titles))
+	for _, title := range titles {
+		wanted[normalizeDeterministicHeading(title)] = struct{}{}
+	}
+	lines := strings.Split(strings.ReplaceAll(document, "\r\n", "\n"), "\n")
+	for index, line := range lines {
+		match := deterministicHeadingPattern.FindStringSubmatch(strings.TrimSpace(line))
+		if len(match) != 3 {
+			continue
+		}
+		if _, ok := wanted[normalizeDeterministicHeading(match[2])]; !ok {
+			continue
+		}
+		level := len(match[1])
+		end := len(lines)
+		for next := index + 1; next < len(lines); next++ {
+			nextMatch := deterministicHeadingPattern.FindStringSubmatch(strings.TrimSpace(lines[next]))
+			if len(nextMatch) == 3 && len(nextMatch[1]) <= level {
+				end = next
+				break
+			}
+		}
+		if body := strings.TrimSpace(strings.Join(lines[index+1:end], "\n")); body != "" {
+			return body
+		}
+	}
+	return ""
+}
+
+func normalizeDeterministicHeading(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "#*_`：:。.!！?？")
+	return strings.ToLower(strings.Join(strings.Fields(value), " "))
+}
+
+func deterministicMarkdownList(section string) []string {
+	var items []string
+	current := ""
+	flush := func() {
+		current = strings.TrimSpace(current)
+		if current != "" {
+			items = append(items, current)
+		}
+		current = ""
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(section, "\r\n", "\n"), "\n") {
+		match := deterministicListItemPattern.FindStringSubmatch(line)
+		if len(match) != 3 {
+			continue
+		}
+		item := strings.TrimSpace(match[2])
+		if item == "" {
+			continue
+		}
+		if match[1] == "" {
+			flush()
+			current = item
+		} else if current != "" {
+			current += "；" + item
+		}
+	}
+	flush()
+	if len(items) == 0 {
+		if excerpt := deterministicDocumentExcerpt(section, 400); excerpt != "" {
+			items = append(items, excerpt)
+		}
+	}
+	return items
+}
+
+func deterministicDocumentExcerpt(document string, limit int) string {
+	var paragraphs []string
+	for _, block := range strings.Split(strings.ReplaceAll(document, "\r\n", "\n"), "\n\n") {
+		block = strings.TrimSpace(block)
+		if block == "" || deterministicHeadingPattern.MatchString(block) {
+			continue
+		}
+		paragraphs = append(paragraphs, block)
+		if len(strings.Join(paragraphs, "\n\n")) >= limit {
+			break
+		}
+	}
+	return truncate(strings.TrimSpace(strings.Join(paragraphs, "\n\n")), limit)
+}
+
+func demoteMarkdownHeadings(value string) string {
+	lines := strings.Split(value, "\n")
+	for index, line := range lines {
+		match := deterministicHeadingPattern.FindStringSubmatch(strings.TrimSpace(line))
+		if len(match) == 3 && len(match[1]) < 6 {
+			lines[index] = "#" + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func deterministicImportantFiles(document string, repositoryFiles []string) []string {
+	seen := make(map[string]struct{})
+	files := make([]string, 0, len(repositoryFiles)+4)
+	appendFile := func(value string, requireDirectory bool) {
+		portable, ok := portableImportantFile(value, "")
+		if !ok || (requireDirectory && !strings.Contains(portable, "/")) || path.Ext(portable) == "" {
+			return
+		}
+		if _, exists := seen[portable]; exists {
+			return
+		}
+		seen[portable] = struct{}{}
+		files = append(files, portable)
+	}
+	for _, value := range repositoryFiles {
+		appendFile(value, false)
+	}
+	for _, match := range deterministicInlineCodePattern.FindAllStringSubmatch(document, -1) {
+		if len(match) == 2 {
+			appendFile(match[1], true)
+		}
+	}
+	return files
 }
 
 // ParseSections accepts a strict JSON result or a JSON object wrapped in
