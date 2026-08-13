@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -337,6 +338,10 @@ func BuildFromSections(id, goal string, source types.SourceRef, sections Section
 }
 
 func Render(handoff types.Handoff, sections Sections) string {
+	return render(handoff, sections, false)
+}
+
+func render(handoff types.Handoff, sections Sections, reviewDraft bool) string {
 	sections = normalizeSections(sections, handoff.Intent, handoff.Goal)
 	title := strings.TrimSpace(handoff.Title)
 	if title == "" {
@@ -350,7 +355,7 @@ func Render(handoff types.Handoff, sections Sections) string {
 	fmt.Fprintf(&output, "title: %s\ncreated_at: %s\nexpires_at: %s\ngenerator: %s\n---\n\n", yamlString(title), handoff.CreatedAt.Format(time.RFC3339), handoff.ExpiresAt.Format(time.RFC3339), yamlString(handoff.Generator))
 	fmt.Fprintf(&output, "# %s\n\n", markdownTitle(title))
 	if sections.Intent == IntentShare {
-		renderShareMarkdown(&output, handoff, sections)
+		renderShareMarkdown(&output, handoff, sections, reviewDraft)
 	} else {
 		renderContinueMarkdown(&output, handoff, sections)
 	}
@@ -380,9 +385,14 @@ func renderContinueMarkdown(output *strings.Builder, handoff types.Handoff, sect
 	writeListAtLevel(output, 3, "Open Questions", sections.OpenQuestions)
 }
 
-func renderShareMarkdown(output *strings.Builder, handoff types.Handoff, sections Sections) {
+func renderShareMarkdown(output *strings.Builder, handoff types.Handoff, sections Sections, reviewDraft bool) {
 	output.WriteString("## For Human\n\n")
-	for _, section := range sections.HumanSections {
+	hideSinglePreserveHeading := !reviewDraft && handoff.Generator == "preserve" && len(sections.HumanSections) == 1
+	for index, section := range sections.HumanSections {
+		if hideSinglePreserveHeading && index == 0 {
+			fmt.Fprintf(output, "%s\n\n", section.Body)
+			continue
+		}
 		fmt.Fprintf(output, "### %s\n\n%s\n\n", markdownTitle(section.Title), section.Body)
 	}
 	output.WriteString("## For Agent\n\n")
@@ -405,7 +415,7 @@ var reviewSectionTitles = []string{
 // user content cannot be mistaken for handoff section boundaries after edit.
 func RenderReviewDraft(handoff types.Handoff, sections Sections) string {
 	sections = normalizeSections(sections, handoff.Intent, handoff.Goal)
-	markdown := Render(handoff, sections)
+	markdown := render(handoff, sections, true)
 	if sections.Intent == IntentShare {
 		cursor := 0
 		for _, section := range sections.HumanSections {
@@ -835,10 +845,10 @@ func FallbackSections(intent, goal string, source types.Context) Sections {
 		return Sections{
 			Intent: IntentShare,
 			HumanSections: []types.HumanSection{{
-				Title: "未生成讨论摘要",
-				Body:  "Agent 归纳不可用。下面保留经过脱敏的可读讨论，但没有把它自动改写成任务。\n\n" + contextText,
+				Title: "保留的可读内容",
+				Body:  valueOrUnknown(contextText),
 			}},
-			Context:        contextText,
+			Context:        "正文来自发送方提供的、经过尽力脱敏的可读内容；未进行旁路 Agent 归纳。",
 			Decisions:      []string{},
 			ImportantFiles: append([]string(nil), source.Repo.ChangedFiles...),
 			OpenQuestions:  []string{},
@@ -874,6 +884,86 @@ func FallbackSections(intent, goal string, source types.Context) Sections {
 		NextSteps:       append([]string(nil), todos...),
 		OpenQuestions:   openQuestions,
 	}
+}
+
+// PreserveSections publishes already-prepared stdin or file Markdown without
+// asking a sidecar Agent to rewrite it. The source has already passed through
+// SanitizeContext, so structure is retained while best-effort redaction still
+// applies. Agent Session sources are intentionally rejected: selecting and
+// preparing the relevant excerpt belongs to the calling Agent, not this mode.
+func PreserveSections(goal string, source types.Context) (Sections, error) {
+	kind := strings.ToLower(strings.TrimSpace(source.Source))
+	if kind != "stdin" && kind != "file" {
+		return Sections{}, fmt.Errorf("preserve requires prepared Markdown through stdin or --file; it cannot publish a complete %s Agent Session", valueOrUnknown(kind))
+	}
+	if len(source.Messages) == 0 {
+		return Sections{}, errors.New("preserve received no readable content")
+	}
+	if len(source.Messages) > 8 {
+		return Sections{}, fmt.Errorf("preserve accepts at most 8 input files, got %d; combine related files so no content is silently omitted", len(source.Messages))
+	}
+	sections := make([]types.HumanSection, 0, len(source.Messages))
+	singleInput := len(source.Messages) == 1
+	for index, message := range source.Messages {
+		title := "正文"
+		body := strings.TrimSpace(message.Text)
+		if kind == "file" && !singleInput {
+			title = fmt.Sprintf("文件 %d", index+1)
+			if strings.HasPrefix(body, "File: ") {
+				if separator := strings.Index(body, "\n\n"); separator >= 0 {
+					title = strings.TrimSpace(strings.TrimPrefix(body[:separator], "File: "))
+					body = strings.TrimSpace(body[separator+2:])
+				}
+			}
+		} else if kind == "file" && strings.HasPrefix(body, "File: ") {
+			if separator := strings.Index(body, "\n\n"); separator >= 0 {
+				body = strings.TrimSpace(body[separator+2:])
+			}
+		}
+		if singleInput {
+			body = stripMatchingDocumentTitle(body, goal)
+		}
+		if body == "" {
+			continue
+		}
+		sections = append(sections, types.HumanSection{Title: title, Body: body})
+	}
+	if len(sections) == 0 {
+		return Sections{}, errors.New("preserve received no readable content")
+	}
+	return Sections{
+		Intent:         IntentShare,
+		HumanSections:  sections,
+		Context:        "正文由发送方通过 stdin 或文件提供，经过尽力脱敏后按原 Markdown 结构发布；未调用旁路归纳 Agent。",
+		Decisions:      []string{},
+		ImportantFiles: append([]string(nil), source.Repo.ChangedFiles...),
+		OpenQuestions:  []string{},
+	}, nil
+}
+
+func stripMatchingDocumentTitle(body, goal string) string {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	first := 0
+	for first < len(lines) && strings.TrimSpace(lines[first]) == "" {
+		first++
+	}
+	if first >= len(lines) {
+		return strings.TrimSpace(body)
+	}
+	match := deterministicHeadingPattern.FindStringSubmatch(strings.TrimSpace(lines[first]))
+	if len(match) != 3 || len(match[1]) != 1 || !sameDocumentTitle(match[2], goal) {
+		return strings.TrimSpace(body)
+	}
+	return strings.TrimSpace(strings.Join(lines[first+1:], "\n"))
+}
+
+func sameDocumentTitle(left, right string) bool {
+	normalize := func(value string) string {
+		value = strings.TrimSpace(value)
+		value = strings.Trim(value, "*_`#")
+		return strings.ToLower(strings.Join(strings.Fields(value), " "))
+	}
+	return normalize(left) != "" && normalize(left) == normalize(right)
 }
 
 func deterministicDocument(source types.Context) string {
@@ -1119,7 +1209,7 @@ func sanitizeHumanSections(values []types.HumanSection) []types.HumanSection {
 	clean := make([]types.HumanSection, 0, len(values))
 	for _, value := range values {
 		title := truncate(strings.Join(strings.Fields(Redact(value.Title)), " "), 160)
-		body := truncate(strings.TrimSpace(Redact(value.Body)), 20_000)
+		body := truncate(strings.TrimSpace(Redact(value.Body)), 4_000_000)
 		if title == "" || body == "" {
 			continue
 		}

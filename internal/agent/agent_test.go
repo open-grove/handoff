@@ -30,6 +30,55 @@ func TestResolvePrefersCurrentAgentEnvironment(t *testing.T) {
 	}
 }
 
+func TestResolveCallerMarkerBeatsLeakedHostMarkers(t *testing.T) {
+	runner := Runner{
+		LookPath: func(name string) (string, error) { return "/bin/" + name, nil },
+		Environ: func(name string) string {
+			return map[string]string{
+				"HANDOFF_CALLER_RUNTIME": "claude",
+				"CODEX_THREAD_ID":        "leaked-codex-thread",
+				"CLAUDECODE":             "1",
+			}[name]
+		},
+	}
+	runtime, err := runner.Resolve("auto", "stdin")
+	if err != nil || runtime != "claude" {
+		t.Fatalf("resolved (%q, %v)", runtime, err)
+	}
+}
+
+func TestResolveRejectsAmbiguousHostForPreparedInput(t *testing.T) {
+	runner := Runner{
+		LookPath: func(name string) (string, error) { return "/bin/" + name, nil },
+		Environ: func(name string) string {
+			if name == "CODEX_THREAD_ID" || name == "CLAUDECODE" {
+				return "1"
+			}
+			return ""
+		},
+	}
+	_, err := runner.Resolve("auto", "stdin")
+	if err == nil || !strings.Contains(err.Error(), "multiple Agent host markers") {
+		t.Fatalf("ambiguous host was silently resolved: %v", err)
+	}
+}
+
+func TestResolveUsesSourceToDisambiguateHostMarkers(t *testing.T) {
+	runner := Runner{
+		LookPath: func(name string) (string, error) { return "/bin/" + name, nil },
+		Environ: func(name string) string {
+			if name == "CODEX_THREAD_ID" || name == "CLAUDECODE" {
+				return "1"
+			}
+			return ""
+		},
+	}
+	runtime, err := runner.Resolve("auto", "claude")
+	if err != nil || runtime != "claude" {
+		t.Fatalf("resolved (%q, %v)", runtime, err)
+	}
+}
+
 func TestResolveUsesSessionSourceOutsideAgent(t *testing.T) {
 	runner := Runner{
 		LookPath: func(name string) (string, error) {

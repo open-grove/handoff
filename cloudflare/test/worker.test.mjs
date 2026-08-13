@@ -197,6 +197,43 @@ test("share handoffs preserve conclusions without inventing task sections", asyn
   assert.doesNotMatch(legacyPage, /class="response-card"/);
 });
 
+test("preserve handoffs keep long prepared Markdown without a failure banner or duplicate", async () => {
+  const exactMarker = "PROMPT-END-" + "x".repeat(25_000);
+  const body = `# 测试方法\n\n## 两轮 Prompt\n\nhttps://example.com/download.bin\n\n\`sha256:abc\`\n\n${exactMarker}`;
+  const response = await route(new Request("https://handoff.example/v1/handoffs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      goal: "测试方法",
+      source: { kind: "stdin" },
+      generator: "preserve",
+      sections: {
+        intent: "share",
+        human_sections: [{ title: "ww-bedrock-single-turn-gray-test.md", body }],
+        context: "正文由发送方准备，未调用旁路归纳 Agent。",
+        decisions: [],
+        important_files: [],
+        open_questions: [],
+      },
+    }),
+  }), { HANDOFF_DB: fakeDB() });
+  assert.equal(response.status, 201);
+  const created = await response.json();
+  assert.equal(created.handoff.generator, "preserve");
+  assert.match(created.handoff.markdown, new RegExp(exactMarker.slice(-80)));
+  assert.equal((created.handoff.markdown.match(/https:\/\/example\.com\/download\.bin/g) || []).length, 1);
+  assert.doesNotMatch(created.handoff.markdown, /ww-bedrock-single-turn-gray-test\.md|### 正文/);
+  assert.equal((created.handoff.markdown.match(/# 测试方法/g) || []).length, 1);
+  assert.doesNotMatch(created.handoff.markdown, /Agent 归纳不可用|未生成讨论摘要/);
+  const page = renderHTML(created.handoff, {
+    intent: "share",
+    human_sections: [{ title: "正文", body: "## 两轮 Prompt\n\nExact" }],
+    context: "未调用旁路归纳 Agent。",
+    decisions: [], important_files: [], open_questions: [],
+  });
+  assert.doesNotMatch(page, /ww-bedrock-single-turn-gray-test\.md|<h3>正文<\/h3>|<h1>测试方法<\/h1>[^]*<h[1-4]>测试方法<\/h[1-4]>/);
+});
+
 test("share pages render inline and display LaTeX as native MathML", () => {
   const body = String.raw`Inline $s_A = f_\theta(p,r_A)$ works.
 

@@ -71,6 +71,93 @@ func TestFallbackSectionsKeepsSummaryAndCompleteHistory(t *testing.T) {
 	}
 }
 
+func TestShareFallbackKeepsWarningAtCreationBoundary(t *testing.T) {
+	sections := FallbackSections(IntentShare, "share", types.Context{
+		Source:   "stdin",
+		Messages: []types.Message{{Role: "user", Text: "# 两轮 Prompt\n\nhttps://example.com/file\n\n`sha256:abc`"}},
+	})
+	if len(sections.HumanSections) != 1 || !strings.Contains(sections.HumanSections[0].Body, "https://example.com/file") {
+		t.Fatalf("fallback lost readable content: %#v", sections)
+	}
+	joined := sections.HumanSections[0].Title + sections.HumanSections[0].Body + sections.Context
+	for _, misleading := range []string{"Agent 归纳不可用", "未生成讨论摘要"} {
+		if strings.Contains(joined, misleading) {
+			t.Fatalf("published sections contain creation-time warning %q: %s", misleading, joined)
+		}
+	}
+	if strings.Count(joined, "https://example.com/file") != 1 {
+		t.Fatalf("fallback duplicated source content: %s", joined)
+	}
+}
+
+func TestPreserveSectionsKeepsPreparedMarkdownWithoutSidecarRewrite(t *testing.T) {
+	body := "# 测试方法\n\n## Prompt 1\n\n请不要改写。\n\n## Prompt 2\n\nhttps://example.com/download.bin\n\n```bash\nprintf '%s' value\n```\n\nSHA-256: `0123456789abcdef`"
+	sections, err := PreserveSections("测试方法", SanitizeContext(types.Context{
+		Source:   "stdin",
+		Messages: []types.Message{{Role: "user", Text: body}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sections.Intent != IntentShare || len(sections.HumanSections) != 1 || sections.HumanSections[0].Title != "正文" || strings.Contains(sections.HumanSections[0].Body, "# 测试方法") {
+		t.Fatalf("prepared Markdown was rewritten: %#v", sections)
+	}
+	for _, exact := range []string{"请不要改写。", "https://example.com/download.bin", "```bash\nprintf '%s' value\n```", "SHA-256: `0123456789abcdef`"} {
+		if !strings.Contains(sections.HumanSections[0].Body, exact) {
+			t.Fatalf("prepared Markdown lost %q: %q", exact, sections.HumanSections[0].Body)
+		}
+	}
+	if strings.Contains(sections.Context, body) || strings.Contains(sections.Context, "Agent 归纳不可用") {
+		t.Fatalf("preserve context duplicated content or reported a failure: %q", sections.Context)
+	}
+}
+
+func TestPreserveSectionsUsesFileNamesAndRejectsAgentSessions(t *testing.T) {
+	sections, err := PreserveSections("files", types.Context{
+		Source: "file",
+		Messages: []types.Message{
+			{Role: "user", Text: "File: prompts.md\n\n# Prompt\n\nExact"},
+			{Role: "user", Text: "File: checksums.txt\n\nsha256:abc"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sections.HumanSections) != 2 || sections.HumanSections[0].Title != "prompts.md" || sections.HumanSections[0].Body != "# Prompt\n\nExact" || sections.HumanSections[1].Title != "checksums.txt" {
+		t.Fatalf("file input was not preserved as separate sections: %#v", sections.HumanSections)
+	}
+	if _, err := PreserveSections("all", types.Context{Source: "codex", Messages: []types.Message{{Role: "user", Text: "all"}}}); err == nil || !strings.Contains(err.Error(), "stdin or --file") {
+		t.Fatalf("Agent Session preserve was accepted: %v", err)
+	}
+}
+
+func TestSinglePreserveDocumentDoesNotRepeatFileNameOrMatchingH1(t *testing.T) {
+	goal := "WW/Bedrock 单次长流灰度测试方法"
+	sections, err := PreserveSections(goal, types.Context{
+		Source:   "file",
+		Messages: []types.Message{{Role: "user", Text: "File: ww-bedrock-single-turn-gray-test.md\n\n# " + goal + "\n\n## 目的\n\n验证长流。"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sections.HumanSections[0].Title != "正文" || sections.HumanSections[0].Body != "## 目的\n\n验证长流。" {
+		t.Fatalf("single preserve presentation was not normalized: %#v", sections.HumanSections[0])
+	}
+	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", goal, types.SourceRef{Kind: "file"}, sections, "preserve", time.Now().UTC(), time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	humanMarkdown := strings.SplitN(withoutFrontMatter(handoff.Markdown), "## For Agent", 2)[0]
+	if strings.Contains(handoff.Markdown, "ww-bedrock-single-turn-gray-test.md") || strings.Contains(handoff.Markdown, "### 正文") || strings.Count(humanMarkdown, goal) != 1 {
+		t.Fatalf("single preserve document repeated presentation metadata:\n%s", handoff.Markdown)
+	}
+	page := HTML(handoff)
+	humanPage := strings.SplitN(page, `<details class="panel agent-panel">`, 2)[0]
+	if strings.Contains(page, "ww-bedrock-single-turn-gray-test.md") || strings.Contains(page, ">正文<") || strings.Count(humanPage, goal) != 2 {
+		t.Fatalf("single preserve page repeated presentation metadata: %s", page)
+	}
+}
+
 func TestFallbackSectionsBuildsUsefulHumanSummaryFromScopedMarkdown(t *testing.T) {
 	document := `File: author-report.md
 

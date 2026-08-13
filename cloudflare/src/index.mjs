@@ -372,6 +372,7 @@ function buildFromSections(input, ttlSeconds, contextAttachment = null) {
 
   const sections = normalizeSections(input.sections, input.sections?.intent || input.intent || "auto", goal);
   const generator = sanitizeText(input.generator) || "unknown";
+  if (generator === "preserve") normalizePreservePresentation(sections, goal);
   const id = randomID();
   const now = new Date();
   const handoff = {
@@ -393,6 +394,27 @@ function buildFromSections(input, ttlSeconds, contextAttachment = null) {
     _sections: sections,
     ...(contextAttachment ? { _context_attachment: contextAttachment } : {}),
   };
+}
+
+function normalizePreservePresentation(sections, goal) {
+  if (sections.intent !== "share" || sections.human_sections.length !== 1) return;
+  const section = sections.human_sections[0];
+  section.title = "正文";
+  section.body = stripMatchingDocumentTitle(section.body, goal);
+}
+
+function stripMatchingDocumentTitle(body, goal) {
+  const lines = sanitizeText(body).replaceAll("\r\n", "\n").split("\n");
+  let first = 0;
+  while (first < lines.length && !lines[first].trim()) first += 1;
+  if (first >= lines.length) return sanitizeText(body).trim();
+  const heading = lines[first].trim().match(/^#\s+(.+?)\s*$/);
+  if (!heading || normalizeDocumentTitle(heading[1]) !== normalizeDocumentTitle(goal)) return sanitizeText(body).trim();
+  return lines.slice(first + 1).join("\n").trim();
+}
+
+function normalizeDocumentTitle(value) {
+  return sanitizeText(value).trim().replace(/^[*_`#]+|[*_`#]+$/g, "").replace(/\s+/g, " ").toLowerCase();
 }
 
 function sanitizeIntent(value) {
@@ -455,7 +477,7 @@ function sanitizeHumanSections(value) {
   for (const item of values) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const title = truncate(sanitizeText(item.title).replace(/\s+/g, " "), 160);
-    const body = truncate(sanitizeText(item.body), 20_000);
+    const body = truncate(sanitizeText(item.body), 4_000_000);
     if (!title || !body) continue;
     output.push({ title, body });
     if (output.length === 8) break;
@@ -795,10 +817,10 @@ function fallbackSections(intent, goal, source) {
       human_status: "",
       human_todos: [],
       human_sections: [{
-        title: "未生成讨论摘要",
-        body: `Agent 归纳不可用。下面保留经过脱敏的可读讨论，但没有把它自动改写成任务。\n\n${context || "Unknown"}`,
+        title: "保留的可读内容",
+        body: context || "Unknown",
       }],
-      context: context || "Unknown",
+      context: "正文来自发送方提供的、经过尽力脱敏的可读内容；未进行旁路 Agent 归纳。",
       decisions: [],
       current_state: "",
       important_files: Array.isArray(repository.changed_files) ? repository.changed_files : [],
@@ -923,8 +945,11 @@ export function renderMarkdown(handoff, sections) {
   );
   if (intent === "share") {
     lines.push("## For Human", "");
-    for (const section of sections.human_sections || []) {
-      lines.push(`### ${markdownTitle(section.title)}`, "", section.body, "");
+    const humanSections = sections.human_sections || [];
+    const hideSinglePreserveHeading = handoff.generator === "preserve" && humanSections.length === 1;
+    for (const [index, section] of humanSections.entries()) {
+      if (hideSinglePreserveHeading && index === 0) lines.push(section.body, "");
+      else lines.push(`### ${markdownTitle(section.title)}`, "", section.body, "");
     }
     lines.push("## For Agent", "", "### Topic", "", handoff.goal || "Unknown", "", "### Technical Context", "", sections.context || "Unknown", "");
     appendMarkdownListIfAny(lines, "Verified Decisions", sections.decisions);
@@ -1128,8 +1153,9 @@ function renderHandoffHTML(handoff, sections, documentMarkdown) {
     ["当前情况", sections.human_status, false],
     ["待办事项", sections.human_todos, true],
   ];
+  const hideSinglePreserveHeading = handoff.generator === "preserve" && intent === "share" && humanSections.length === 1;
   const humanBlocks = humanSections
-    .map(([sectionTitle, value, task]) => `<section class="summary-block"><h3>${escapeHTML(sectionTitle)}</h3>${documentMarkdown ? `<div class="prose">${renderDocumentValue(value, { task })}</div>` : (intent === "share" ? renderSectionBody(value) : (Array.isArray(value) ? renderItems(value) : renderText(value)))}</section>`)
+    .map(([sectionTitle, value, task], index) => `<section class="summary-block">${hideSinglePreserveHeading && index === 0 ? "" : `<h3>${escapeHTML(sectionTitle)}</h3>`}${documentMarkdown ? `<div class="prose">${renderDocumentValue(value, { task })}</div>` : (intent === "share" ? renderSectionBody(value) : (Array.isArray(value) ? renderItems(value) : renderText(value)))}</section>`)
     .join("");
   let agentSectionValues = intent === "share" ? [
     ["Topic", handoff.goal],

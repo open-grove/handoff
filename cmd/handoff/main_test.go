@@ -306,13 +306,41 @@ func TestResolveCreateSelectionUsesPreferredVocabulary(t *testing.T) {
 }
 
 func TestRuntimeOnlyAppliesToAgentGenerator(t *testing.T) {
-	for _, generator := range []string{"deterministic", "cloud"} {
+	for _, generator := range []string{"preserve", "cloud"} {
 		_, err := resolveCreateSelection(createSelectionInput{
 			Source: "auto", Generator: generator, Runtime: "opencode",
 			Set: map[string]bool{"generator": true, "runtime": true},
 		})
 		if err == nil || !strings.Contains(err.Error(), "only selects the local sidecar") {
 			t.Fatalf("%s generator accepted an unrelated runtime: %v", generator, err)
+		}
+	}
+}
+
+func TestDeterministicGeneratorIsInternalOnly(t *testing.T) {
+	_, err := resolveCreateSelection(createSelectionInput{
+		Source: "auto", Generator: "deterministic", Runtime: "auto",
+		Set: map[string]bool{"generator": true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "internal-only") || !strings.Contains(err.Error(), "--generator preserve") {
+		t.Fatalf("explicit deterministic generator was accepted or guidance was unclear: %v", err)
+	}
+}
+
+func TestLegacyNoCompactionMapsToPreserve(t *testing.T) {
+	for flagName, input := range map[string]createSelectionInput{
+		"mode": {
+			Source: "auto", Generator: "agent", Runtime: "auto", LegacyMode: "local",
+			Set: map[string]bool{"mode": true},
+		},
+		"compact": {
+			Source: "auto", Generator: "agent", Runtime: "auto", LegacyCompact: "none",
+			Set: map[string]bool{"compact": true},
+		},
+	} {
+		selection, err := resolveCreateSelection(input)
+		if err != nil || selection.Generator != "preserve" {
+			t.Fatalf("legacy --%s did not map to preserve: %#v, %v", flagName, selection, err)
 		}
 	}
 }
@@ -622,6 +650,10 @@ func TestSchemaContracts(t *testing.T) {
 		t.Fatal("create schema does not disclose Agent auto-update behavior")
 	}
 	createProperties := create["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	generatorEnum := createProperties["generator"].(map[string]any)["enum"].([]string)
+	if !strings.Contains(strings.Join(generatorEnum, ","), "preserve") || strings.Contains(strings.Join(generatorEnum, ","), "deterministic") {
+		t.Fatalf("create schema generator boundary is wrong: %#v", generatorEnum)
+	}
 	for _, property := range []string{"source", "runtime"} {
 		enum := createProperties[property].(map[string]any)["enum"].([]string)
 		if !strings.Contains(strings.Join(enum, ","), "opencode") {
@@ -657,6 +689,8 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 		!strings.Contains(content, description) ||
 		!strings.Contains(content, "--intent share") ||
 		!strings.Contains(content, "--intent continue") ||
+		!strings.Contains(content, "always add `--json`") ||
+		!strings.Contains(content, "Return `share_message` exactly") ||
 		!strings.Contains(content, "Ask the smallest context-specific clarification") ||
 		!strings.Contains(content, "Do not turn this into a fixed questionnaire") ||
 		!strings.Contains(content, "--generator cloud") ||

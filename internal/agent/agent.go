@@ -28,7 +28,7 @@ type Runner struct {
 }
 
 // Resolve chooses the CLI used for a fresh, isolated generation sidecar. It
-// prefers the current Agent host, then the Session source, then any installed
+// prefers an explicit caller marker, then the current Agent host, then the Session source, then any installed
 // supported CLI. requested selects only the sidecar runtime, never the source
 // Session or model.
 func (runner Runner) Resolve(requested, sourceKind string) (string, error) {
@@ -44,15 +44,25 @@ func (runner Runner) Resolve(requested, sourceKind string) (string, error) {
 	}
 
 	env := runner.environ()
-	switch {
-	case env("CODEX_THREAD_ID") != "":
-		return runner.require("codex")
-	case env("CLAUDECODE") != "" || env("CLAUDE_CODE_ENTRYPOINT") != "" || env("CLAUDE_CODE_SESSION_ID") != "":
-		return runner.require("claude")
-	case env("PI_CODING_AGENT_SESSION") != "" || env("PI_SESSION_ID") != "":
-		return runner.require("pi")
-	case env("OPENCODE") != "":
-		return runner.require("opencode")
+	caller := strings.ToLower(strings.TrimSpace(env("HANDOFF_CALLER_RUNTIME")))
+	if caller != "" {
+		if !isRuntime(caller) {
+			return "", fmt.Errorf("unknown HANDOFF_CALLER_RUNTIME %q (use codex, claude, pi, or opencode)", caller)
+		}
+		return runner.require(caller)
+	}
+	hosts := detectedHostRuntimes(env)
+	if len(hosts) == 1 {
+		return runner.require(hosts[0])
+	}
+	if len(hosts) > 1 {
+		sourceKind = strings.ToLower(strings.TrimSpace(sourceKind))
+		for _, host := range hosts {
+			if sourceKind == host {
+				return runner.require(sourceKind)
+			}
+		}
+		return "", fmt.Errorf("multiple Agent host markers are present (%s); set HANDOFF_CALLER_RUNTIME to the calling Agent runtime", strings.Join(hosts, ", "))
 	}
 	if isRuntime(sourceKind) {
 		return runner.require(sourceKind)
@@ -63,6 +73,23 @@ func (runner Runner) Resolve(requested, sourceKind string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%w (install Codex, Claude Code, Pi, or OpenCode; deterministic backup is limited to scoped --file/stdin input or a reviewed Session)", ErrNoSupportedSidecarRuntime)
+}
+
+func detectedHostRuntimes(env func(string) string) []string {
+	var runtimes []string
+	if env("CODEX_THREAD_ID") != "" {
+		runtimes = append(runtimes, "codex")
+	}
+	if env("CLAUDECODE") != "" || env("CLAUDE_CODE_ENTRYPOINT") != "" || env("CLAUDE_CODE_SESSION_ID") != "" {
+		runtimes = append(runtimes, "claude")
+	}
+	if env("PI_CODING_AGENT_SESSION") != "" || env("PI_SESSION_ID") != "" {
+		runtimes = append(runtimes, "pi")
+	}
+	if env("OPENCODE") != "" {
+		runtimes = append(runtimes, "opencode")
+	}
+	return runtimes
 }
 
 // Generate starts a fresh, ephemeral Agent sidecar. It never resumes or mutates
