@@ -10,8 +10,7 @@ Include the affected version, reproduction steps, impact, and any suggested miti
 
 ## Security model
 
-- A handoff URL or share code is a read capability. Anyone who receives it can read that handoff until it expires or is deleted.
+- A handoff URL or share code is a read capability. Anyone who receives it can read that handoff until it is explicitly deleted.
 - Anonymous publishing and receiving do not require login.
-- Server-side compaction requires an active OpenGrove login.
 - Per-handoff delete credentials are stored locally by the creator; the service stores only their hashes.
 - Secrets and production credentials must be supplied through deployment secrets or local configuration and must never be committed.

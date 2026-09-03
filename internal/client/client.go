@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -30,18 +29,6 @@ func (client Client) Publish(ctx context.Context, input types.PublishRequest) (t
 	return output, err
 }
 
-func (client Client) CompactOnServer(ctx context.Context, input types.CompactRequest) (types.CreateResponse, error) {
-	var output types.CreateResponse
-	err := client.request(ctx, http.MethodPost, "/v1/handoffs/compact", input, &output)
-	return output, err
-}
-
-func (client Client) PreviewServerCompaction(ctx context.Context, input types.CompactRequest) (types.CompactPreviewResponse, error) {
-	var output types.CompactPreviewResponse
-	err := client.requestWithAccept(ctx, http.MethodPost, "/v1/handoffs/compact-preview", input, &output, "text/event-stream, application/json")
-	return output, err
-}
-
 func (client Client) Get(ctx context.Context, id string) (types.CreateResponse, error) {
 	var output types.CreateResponse
 	err := client.request(ctx, http.MethodGet, "/v1/handoffs/"+id, nil, &output)
@@ -65,10 +52,6 @@ func (client Client) Health(ctx context.Context) (map[string]any, error) {
 }
 
 func (client Client) request(ctx context.Context, method, path string, input, output any) error {
-	return client.requestWithAccept(ctx, method, path, input, output, "application/json")
-}
-
-func (client Client) requestWithAccept(ctx context.Context, method, path string, input, output any, accept string) error {
 	if err := validateServer(client.Server); err != nil {
 		return err
 	}
@@ -84,7 +67,7 @@ func (client Client) requestWithAccept(ctx context.Context, method, path string,
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Accept", accept)
+	request.Header.Set("Accept", "application/json")
 	if input != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -96,12 +79,7 @@ func (client Client) requestWithAccept(ctx context.Context, method, path string,
 	}
 	httpClient := client.HTTP
 	if httpClient == nil {
-		if strings.Contains(accept, "text/event-stream") {
-			// The caller's context bounds a healthy long-running model stream.
-			httpClient = &http.Client{}
-		} else {
-			httpClient = &http.Client{Timeout: 5 * time.Minute}
-		}
+		httpClient = &http.Client{Timeout: 5 * time.Minute}
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
@@ -118,74 +96,7 @@ func (client Client) requestWithAccept(ctx context.Context, method, path string,
 	if output == nil || response.StatusCode == http.StatusNoContent {
 		return nil
 	}
-	if strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
-		preview, ok := output.(*types.CompactPreviewResponse)
-		if !ok {
-			return errors.New("unexpected event stream response")
-		}
-		return decodeCompactPreviewStream(response.Body, preview)
-	}
 	return json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(output)
-}
-
-func decodeCompactPreviewStream(reader io.Reader, output *types.CompactPreviewResponse) error {
-	buffered := bufio.NewReader(io.LimitReader(reader, 8<<20))
-	event := ""
-	data := make([]string, 0, 1)
-	resultSeen := false
-	consume := func() error {
-		if len(data) == 0 {
-			event = ""
-			return nil
-		}
-		payload := strings.Join(data, "\n")
-		data = data[:0]
-		switch event {
-		case "result":
-			if err := json.Unmarshal([]byte(payload), output); err != nil {
-				return fmt.Errorf("decode server compaction result: %w", err)
-			}
-			resultSeen = true
-		case "error":
-			var apiError types.ErrorResponse
-			if json.Unmarshal([]byte(payload), &apiError) == nil && apiError.Error != "" {
-				return fmt.Errorf("server compaction stream: %s", apiError.Error)
-			}
-			return errors.New("server compaction stream failed")
-		}
-		event = ""
-		return nil
-	}
-
-	for {
-		line, err := buffered.ReadString('\n')
-		if len(line) > 0 {
-			line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
-			switch {
-			case line == "":
-				if consumeErr := consume(); consumeErr != nil {
-					return consumeErr
-				}
-			case strings.HasPrefix(line, "event:"):
-				event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			case strings.HasPrefix(line, "data:"):
-				data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-			}
-		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				return err
-			}
-			if consumeErr := consume(); consumeErr != nil {
-				return consumeErr
-			}
-			break
-		}
-	}
-	if !resultSeen {
-		return errors.New("server compaction stream ended without a result")
-	}
-	return nil
 }
 
 func validateServer(value string) error {

@@ -1,6 +1,6 @@
 # handoff
 
-`handoff` 是一个给人和 Agent 用的通用上下文交接 CLI。它不复制 Codex / Claude / Pi / OpenCode 的原生 Session；它把当前上下文变成一份可阅读、可追溯、模型无关的 `HANDOFF.md`。默认生成与发布无需登录，只有可选的云端生成复用本机 OpenGrove 登录。
+`handoff` 是一个给人和 Agent 用的通用上下文交接 CLI。它不复制 Codex / Claude / Pi / OpenCode 的原生 Session；它把当前上下文变成一份可阅读、可追溯、模型无关的 `HANDOFF.md`。生成与发布无需登录。
 
 ```text
 当前 Session（只读快照，不执行 /compact）
@@ -13,7 +13,7 @@
             │           │
             │           └── --attach-context（可选持久化）
             ▼
- agent / preserve / cloud 生成 sections
+       agent / preserve 生成 sections
         （deterministic 仅是本机无旁路 Agent 时的内部备用提取）
             │
             ▼
@@ -25,7 +25,7 @@
 | 参数 | 只负责什么 | 不负责什么 |
 |---|---|---|
 | `--source` / `--file` / stdin | 选择输入：Agent Session、文件或管道内容 | 不选生成 Agent、provider 或模型 |
-| `--generator` | 选择 sections 如何产生：本机 Agent 旁路、原样保留已整理 Markdown，或云端生成 | 不决定是否持久化完整 Context |
+| `--generator` | 选择 sections 如何产生：本机 Agent 旁路，或原样保留已整理 Markdown | 不决定是否持久化完整 Context |
 | `--runtime` | 仅在 `--generator agent` 时选择启动哪个本机 Agent CLI 作为旁路 | 不选输入来源、provider 或模型 |
 | `--attach-context` | 独立决定是否把完整脱敏 Canonical Context 作为附件持久化 | 不改变 sections 的生成方式 |
 
@@ -33,7 +33,7 @@
 
 这里要分清两个 Agent：当前处理用户请求的是“调用方 Agent”；`generator=agent` 再启动一个全新的“旁路归纳 Agent”。`generator=preserve` 则不启动第二个 Agent：调用方 Agent 先把需要分享的内容整理成 Markdown，CLI 仅做尽力脱敏并按原结构发布。
 
-面向用户的交互不应等于 CLI 参数列表。Agent 优先从请求里推断 `share` 还是 `continue`；只有两者真的无法判断、且会实质改变交接内容时才追问。云端生成默认关闭，完整可读 Context 附件也默认关闭，两者都只在用户明确要求时打开；这个附件是脱敏后的 Canonical Context，不是原始 provider Session。`source` 和 `runtime` 属于 Agent/CLI 的内部自动路由，不应作为常规问题抛给用户；只有 `--dry-run` 确认发现错误时才覆盖。交接范围、需排除的对话、接收者或预期结果不清晰时，Agent 也只在这些歧义会改变成品时追问。`--review`、TTL 和输出路径都是可选操作项，不是创建 Handoff 前的必答题。
+面向用户的交互不应等于 CLI 参数列表。Agent 优先从请求里推断 `share` 还是 `continue`；只有两者真的无法判断、且会实质改变交接内容时才追问。完整可读 Context 附件默认关闭，只在用户明确要求时打开；这个附件是脱敏后的 Canonical Context，不是原始 provider Session。`source` 和 `runtime` 属于 Agent/CLI 的内部自动路由，不应作为常规问题抛给用户；只有 `--dry-run` 确认发现错误时才覆盖。交接范围、需排除的对话、接收者或预期结果不清晰时，Agent 也只在这些歧义会改变成品时追问。`--review` 和输出路径都是可选操作项，不是创建 Handoff 前的必答题。
 
 ## 用起来
 
@@ -77,14 +77,9 @@ handoff create "continue" --review
 handoff create "continue" --file ./handoff-notes.md
 some-agent-export | handoff create "continue"
 
-# 可选：交给云端 Kimi K3 生成
-# 这会临时发送完整 Canonical Context，仅 cloud generator 要求 OpenGrove 登录
-handoff create "continue" --generator cloud
-
 # 可选：把完整的、尽力脱敏后的可读 Context 附在最终 Handoff 后面
 # 它和 generator 独立；发布附件本身不要求登录
 handoff create "continue" --attach-context
-handoff create "continue" --generator cloud --attach-context
 
 # 可选：同一台机器上的 Agent 直接读取原始 Session 文件
 # 不压缩、不上传、不生成链接或分享码
@@ -105,19 +100,12 @@ handoff receive a-secure-share-code --output HANDOFF.md
 # 只有创建时显式 --attach-context 才存在；receive 不会自动下载
 handoff context 'opengrove-handoff:a-secure-share-code'
 
-# 查看当前登录、服务地址和云端生成权限
-handoff whoami
-
 # 检查或自动安装 GitHub Release
 handoff update --check
 handoff update
 ```
 
 在 Codex、Claude Code、Pi 或 OpenCode 中执行 `create`、`receive`、`context`、`session` 时，CLI 会在真正交接前做一次有 24 小时缓存的更新预检。发现新版后会在 stderr 显示升级进度，完成校验和原子替换后以原参数重新执行本次命令；stdout 始终只保留 Handoff 的正式结果。网络、权限或 Skill 同步问题不会阻断交接，失败后会继续使用当前进程，且 24 小时内不反复尝试。`--dry-run` 不触发自动更新；设置 `HANDOFF_NO_AUTO_UPDATE=1` 可完全关闭。普通终端如需启用同一行为，可设置 `HANDOFF_AUTO_UPDATE=1`。当前自动替换支持 macOS 和 Linux；Windows 仍保留更新提示和手动下载路径。
-
-云端生成使用端到端 SSE：Worker 会立即建立响应，并在等待模型首 token
-期间持续发送心跳，随后逐段转发生成结果。Kimi 的长上下文请求可能需要数分钟，
-CLI 会以 15 分钟为整体边界；普通发布、接收等请求仍使用较短超时。
 
 Agent 可先查合同，不用猜参数：
 
@@ -158,11 +146,10 @@ handoff doctor
 | `handoff session locate` | read | 返回仅限同机使用的原始 provider Session 路径 |
 | `handoff receive <reference>` | read | 接受 `opengrove-handoff:<code>`、旧分享码、人类页面或 `.md` URL |
 | `handoff context <reference>` | read | 读取创建时显式附带的完整脱敏可读 Context |
-| `handoff delete <code> --yes` | high-risk-write | 在 TTL 到期前删除交接卡 |
+| `handoff delete <code> --yes` | high-risk-write | 永久删除交接卡 |
 | `handoff admin login/status/logout` | write/read/write | 管理可选的服务管理员凭据；不是 OpenGrove 用户登录 |
 | `handoff config show/set-server` | read/write | 管理 profile |
 | `handoff doctor [--offline]` | read | 检查会话发现、凭据和服务连通性 |
-| `handoff whoami` | read | 显示 CLI、OpenGrove 身份和云端生成权限 |
 | `handoff update [--check]` | high-risk-write/read | 校验 SHA-256 后更新 CLI，并同步未修改的 Skill |
 | `handoff schema [action]` | read | 输出精确动作的 JSON Schema 合同 |
 | `handoff skills list/read/install` | read/write | 列出、读取或安装二进制内嵌的 Agent Skill |
@@ -202,7 +189,7 @@ CLI 总是构造同一份 Canonical Context：有效的可读 user / assistant �
 
 stdin 超过 4 MiB、Session 中出现损坏的 JSONL 记录、OpenCode 导出不是合法 JSON 或原始导出超过 64 MiB 本地解析上限时，CLI 会明确报错，不会把前半段当成完整上下文继续发布。确定性提取会同时保留辅助 summary 和全部已筛选消息；若最终发布体超过服务端上限，则发布会明确失败。
 
-`--attach-context` 与 generator 完全独立。它把“本次选中输入的 Canonical Context”作为单独附件持久化到 Handoff 生命周期结束；默认不开启。普通 Session 流程附带的是尽力脱敏后的可读 Session；`preserve` 的输入已被 stdin/file 取代，所以它附带的是这份已整理材料，不是原 Agent Session。附件不包含 thinking、tool result、Provider 内部记录、本机 Session 路径、Session ID 或 cursor。上传前会清除已知密钥、私钥、本机用户名路径、邮箱和 IP，但这是 best-effort 规则，无法保证识别自然语言里的全部个人信息。超过 4 MiB 的发布请求会明确失败，不会静默截断。
+`--attach-context` 与 generator 完全独立。它把“本次选中输入的 Canonical Context”作为单独附件永久持久化，直到 Handoff 被显式删除；默认不开启。普通 Session 流程附带的是尽力脱敏后的可读 Session；`preserve` 的输入已被 stdin/file 取代，所以它附带的是这份已整理材料，不是原 Agent Session。附件不包含 thinking、tool result、Provider 内部记录、本机 Session 路径、Session ID 或 cursor。上传前会清除已知密钥、私钥、本机用户名路径、邮箱和 IP，但这是 best-effort 规则，无法保证识别自然语言里的全部个人信息。超过 4 MiB 的发布请求会明确失败，不会静默截断。
 
 `handoff session locate` 是另一条完全本地的路径：CLI 只输出匹配到的 Codex / Claude / Pi 原始 Session 文件绝对路径，不调用模型、不访问 Handoff 服务，也不产生分享码；接收 Agent 必须运行在同一台机器上。OpenCode 使用数据库存储，不存在可安全交付的单 Session 文件，因此不支持这条路径；需要便携的完整可读对话时，使用 `handoff create ... --source opencode --attach-context`。原始 Session 可能含工具数据和 provider 元数据，不应发送到公开渠道。
 
@@ -215,10 +202,8 @@ stdin 超过 4 MiB、Session 中出现损坏的 JSONL 记录、OpenCode 导出�
 - 默认 `agent`、`preserve` 和内部 deterministic 备用路径下，handoffd 只收到最终 sections；只有显式 `--attach-context` 才会额外收到并持久化 Canonical Context。`preserve` 的 Context 是准备好的 stdin/file，不能误称为原 Agent Session。
 - `agent` generator 由选中的本机 Agent 旁路 CLI 发起。如果该 CLI 使用云模型，脱敏后的上下文仍会发送给它已配置的模型服务商，但不会另发给 handoffd 的模型。
 - OpenCode agent generator 会强制关闭 OpenCode 自动分享并拒绝工具权限；生成后仅删除经过目录、创建时间与 ID 三重校验的临时 Session，来源 Session 始终只读。
-- `cloud` generator 会把 Canonical Context 临时交给 handoffd 的模型生成 preview；该生成接口不存储原文。是否持久化仍只由独立的 `--attach-context` 决定。
-- `cloud` generator 要求本机 OpenGrove 已登录；CLI 只读取短期 access token，服务端会向 OpenGrove 账户服务校验。普通发布和接收无需登录。
-- `--review` 会在发布前打开 `$VISUAL` / `$EDITOR` 中的 Markdown；保存关闭后才上传最终 sections。服务端模式为了生成 preview，原文上传发生在 review 之前。
-- 分享 ID 是 128-bit 随机 capability，默认 7 天过期，可以提前删除。
+- `--review` 会在发布前打开 `$VISUAL` / `$EDITOR` 中的 Markdown；保存关闭后才上传最终 sections。
+- 分享 ID 是 128-bit 随机 capability。Handoff 默认永久保留，创建者可凭本机保存的删除凭证主动删除。
 - 匿名发布返回的删除凭证是另一枚 256-bit capability，只保存在创建者本机；服务端不保存明文。
 - Cloudflare Worker 对匿名创建按请求来源做每分钟 30 次的宽松限流，降低公开 CLI 后的批量滥用风险；它不是计费额度系统。
 - 只有本机找不到受支持的 Agent CLI，且来源已通过 `--file` 或 stdin 收窄时，才会使用 deterministic 备用提取。降级原因只在创建端输出，不写入共享页。Agent 已找到但生成失败时直接报错；任何情况都不会静默改用服务端生成。
@@ -235,24 +220,12 @@ set -a; . ./.env; set +a
 go run ./cmd/handoffd
 ```
 
-默认 generator 无需配置火山方舟。只有团队明确使用 `--generator cloud` 时，才需要为 handoffd 配置 [方舟 Agent Plan](https://www.volcengine.com/docs/82379/2373738?lang=zh)：
-
-```dotenv
-ARK_AGENT_PLAN_BASE_URL=https://ark.cn-beijing.volces.com/api/plan
-ARK_AGENT_PLAN_API_KEY=...
-ARK_AGENT_PLAN_MODEL=kimi-k3
-```
-
-服务端通过 Agent Plan 的 Anthropic-compatible `/v1/messages` 接口生成 sections。必须使用 Agent Plan 专属 key；普通 ModelArk key 和 Coding Plan key 不可混用。
-
 HTTP API：
 
 ```text
 GET    /healthz
 GET    /v1/schema/create
 POST   /v1/handoffs        无需登录
-POST   /v1/handoffs/compact-preview Authorization: Bearer <OpenGrove access token>  只生成 sections，不存储
-POST   /v1/handoffs/compact Authorization: Bearer <OpenGrove access token>  兼容旧客户端：生成并发布
 GET    /v1/handoffs/:id
 GET    /v1/handoffs/:id/context  仅在创建时显式附带 Context 才存在
 DELETE /v1/handoffs/:id    X-Handoff-Delete-Token: <per-handoff token>；管理员也可用 Authorization
@@ -287,5 +260,9 @@ make build
 Cloudflare Worker 首次开发或依赖变更后先运行 `npm ci --prefix cloudflare`。发布前可用
 `(cd cloudflare && npx wrangler deploy --dry-run)` 验证打包；确认 Cloudflare 凭据和 D1 绑定后，运行
 `npm run deploy --prefix cloudflare` 部署线上分享页。
+
+从 protocol v6 升级到 v7 时，必须先部署 Worker，让新代码停止读取和清理旧的 `expires_at`，再运行
+`(cd cloudflare && npx wrangler d1 migrations apply HANDOFF_DB --remote)`。`0004_permanent_handoffs.sql`
+会把仍存在的旧记录转为永久记录；不要在旧 Worker 仍在线时提前执行这项迁移。
 
 当前是最小闭环。本版不做组织成员、权限系统、群聊、原生 Session 恢复或并发编辑。

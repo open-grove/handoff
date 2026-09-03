@@ -21,7 +21,6 @@ import (
 	"github.com/open-grove/handoff/internal/card"
 	"github.com/open-grove/handoff/internal/client"
 	"github.com/open-grove/handoff/internal/config"
-	"github.com/open-grove/handoff/internal/opengroveauth"
 	"github.com/open-grove/handoff/internal/ownership"
 	"github.com/open-grove/handoff/internal/source"
 	"github.com/open-grove/handoff/internal/types"
@@ -44,12 +43,10 @@ AGENT QUICKSTART:
   handoff create "discussion topic" --intent share
   handoff create "next goal" --intent continue
   prepared-markdown | handoff create "topic" --intent share --generator preserve
-  handoff create "next goal" --generator cloud
   handoff create "next goal" --attach-context
   handoff session locate                     Return the same-machine Session path
   handoff receive opengrove-handoff:<code>   Print a received HANDOFF.md
   handoff context opengrove-handoff:<code>   Read an attached full Context
-  handoff whoami                             Show identity and cloud-generation access
   handoff schema create                      Inspect the create contract
 
 Usage:
@@ -60,11 +57,10 @@ Commands:
   session      Locate a same-machine provider Session                 Risk: read
   receive      Fetch a handoff by reference, code, or URL             Risk: read
   context      Fetch an explicitly attached full readable Context     Risk: read
-  delete       Delete a handoff before it expires                     Risk: high-risk-write
+  delete       Permanently delete a handoff                           Risk: high-risk-write
   admin        Manage the optional service administrator credential  Risk: write
   config       Show or update CLI configuration                       Risk: read/write
   doctor       Check discovery, identity, and connectivity            Risk: read
-  whoami       Show OpenGrove identity and cloud access               Risk: read
   update       Install a verified release and matching Skill          Risk: high-risk-write
   schema       Print exact machine-readable command contracts         Risk: read
   skills       Inspect or repair embedded Agent Skills                Risk: read/write
@@ -88,7 +84,7 @@ Create pipeline:
 Agent interaction:
   Infer share vs continue; ask only when material ambiguity remains.
   Default to local agent generation and no Context attachment.
-  Cloud generation and Context attachment require an explicit user request.
+  Context attachment requires an explicit user request.
   Resolve source/runtime automatically; do not present them as a questionnaire.
 
 Agent auto-update:
@@ -101,7 +97,6 @@ Generators:
   preserve publishes prepared stdin/file Markdown without a second Agent rewrite.
   deterministic is an internal backup used only when no sidecar CLI is available.
   Its warnings stay in the creator output and are not written into the shared page.
-  cloud requires OpenGrove login.
   --attach-context independently stores the full sanitized readable context.
   The source session is always read-only and is never compacted or resumed.
 `
@@ -115,7 +110,7 @@ Preferred flags:
   --intent auto|share|continue            Artifact intent (default: auto)
   --source auto|codex|claude|pi|opencode  Input Session only (default: auto)
   --file PATH                             Input files instead of a Session; repeatable
-  --generator agent|preserve|cloud        How sections are produced (default: agent)
+  --generator agent|preserve              How sections are produced (default: agent)
   --runtime auto|codex|claude|pi|opencode Local sidecar for agent generator only
   --attach-context                        Persist full Canonical Context independently
   --review                                Edit generated Markdown before publish
@@ -123,7 +118,6 @@ Preferred flags:
   --output PATH                           Also write HANDOFF.md
   --force                                 Overwrite --output
   --no-git                                Omit repository metadata
-  --ttl DURATION                          Lifetime (default: 168h)
 
 Generator note:
   agent starts a fresh isolated sidecar; it never resumes or compacts the source.
@@ -134,8 +128,7 @@ Generator note:
 Risk: write
 
 Compatibility:
-  --upload-context, --mode, --from, --agent, --include-transcript,
-  --full-session, --stdin, and --compact remain accepted temporarily.
+  --ttl, --mode, --from, --agent, and --stdin remain accepted temporarily.
 `
 
 const sessionUsage = `Locate a provider Session file for same-machine use.
@@ -155,8 +148,6 @@ Usage:
   handoff admin login [--server URL] [--token-stdin]
   handoff admin status
   handoff admin logout
-
-This is not OpenGrove user login. Use handoff whoami for cloud-generation access.
 
 Risk: write
 `
@@ -270,8 +261,6 @@ func run(args []string) error {
 		return runConfig(*profileName, outputFormat, commandArgs)
 	case "doctor":
 		return runDoctor(*profileName, outputFormat, commandArgs)
-	case "whoami":
-		return runWhoAmI(*profileName, outputFormat, commandArgs)
 	case "update":
 		return runUpdate(outputFormat, commandArgs)
 	case "schema":
@@ -306,23 +295,19 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	flags.Usage = func() { fmt.Fprint(os.Stdout, createUsage) }
 	sourceName := flags.String("source", "auto", "input Session source only: auto, codex, claude, pi, or opencode")
 	intentName := flags.String("intent", "auto", "artifact intent: auto, share, or continue")
-	generatorName := flags.String("generator", "agent", "section generator: agent sidecar, preserve prepared Markdown, or cloud")
+	generatorName := flags.String("generator", "agent", "section generator: agent sidecar or preserve prepared Markdown")
 	runtimeName := flags.String("runtime", "auto", "local sidecar CLI for the agent generator only; never selects the source or model")
 	attachContext := flags.Bool("attach-context", false, "persist full Canonical Context independently of generation")
-	uploadContext := flags.String("upload-context", "", "deprecated cloud upload acknowledgement: selected or full")
 	legacyFrom := flags.String("from", "auto", "deprecated alias for --source")
-	legacyMode := flags.String("mode", "agent", "deprecated generator alias: agent, local, server, or session")
-	legacyCompact := flags.String("compact", "", "deprecated alias: current, none, or server")
+	legacyMode := flags.String("mode", "agent", "deprecated generator alias: agent, local, or session")
 	legacyAgent := flags.String("agent", "auto", "deprecated alias for --runtime")
 	var files stringList
 	flags.Var(&files, "file", "context file (repeatable)")
 	legacyStdin := flags.Bool("stdin", false, "deprecated: pipe context through stdin instead")
 	noGit := flags.Bool("no-git", false, "omit repository metadata")
-	ttl := flags.Duration("ttl", 7*24*time.Hour, "handoff lifetime")
+	flags.String("ttl", "", "deprecated and ignored; handoffs do not expire")
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	dryRun := flags.Bool("dry-run", false, "inspect source and request without creating")
-	legacyIncludeTranscript := flags.Bool("include-transcript", false, "deprecated cloud upload authorization")
-	legacyFullSession := flags.Bool("full-session", false, "deprecated alias for --upload-context full")
 	review := flags.Bool("review", false, "edit the generated Markdown before publishing")
 	output := flags.String("output", "", "also write HANDOFF.md to this path")
 	force := flags.Bool("force", false, "overwrite --output")
@@ -340,11 +325,13 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	}
 	setFlags := map[string]bool{}
 	flags.Visit(func(item *flag.Flag) { setFlags[item.Name] = true })
+	if setFlags["ttl"] {
+		addDeprecationNotice("--ttl is deprecated and ignored; handoffs no longer expire")
+	}
 	selection, err := resolveCreateSelection(createSelectionInput{
-		Source: *sourceName, Generator: *generatorName, Runtime: *runtimeName, UploadContext: *uploadContext,
+		Source: *sourceName, Generator: *generatorName, Runtime: *runtimeName,
 		AttachContext: *attachContext,
-		LegacyFrom:    *legacyFrom, LegacyMode: *legacyMode, LegacyCompact: *legacyCompact, LegacyAgent: *legacyAgent,
-		LegacyIncludeTranscript: *legacyIncludeTranscript, LegacyFullSession: *legacyFullSession,
+		LegacyFrom:    *legacyFrom, LegacyMode: *legacyMode, LegacyAgent: *legacyAgent,
 		Set: setFlags,
 	})
 	if err != nil {
@@ -352,9 +339,6 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	}
 	for _, deprecated := range selection.Deprecated {
 		addDeprecationNotice(deprecated)
-	}
-	if selection.Generator != "cloud" && selection.UploadContext != "" {
-		return errors.New("deprecated --upload-context is only valid with --generator cloud; use --attach-context to persist Context independently")
 	}
 	if selection.SessionPath && (len(files) > 0 || *legacyStdin) {
 		return errors.New("session mode resolves an Agent session file and cannot be combined with --file or --stdin")
@@ -421,21 +405,6 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		}
 		attachmentBytes = len(encoded)
 	}
-	serverRequestBytes := 0
-	if selection.Generator == "cloud" {
-		encoded, encodeErr := json.Marshal(types.CompactRequest{Intent: intent, Goal: goal, Context: contextSource})
-		if encodeErr != nil {
-			return encodeErr
-		}
-		serverRequestBytes = len(encoded)
-		if !*dryRun && serverRequestBytes > maxServerRequestBytes {
-			return fmt.Errorf(
-				"sanitized Session request is %.1f MiB; the server limit is %.1f MiB (use `handoff session locate` for same-machine access)",
-				float64(serverRequestBytes)/(1<<20),
-				float64(maxServerRequestBytes)/(1<<20),
-			)
-		}
-	}
 	if *dryRun {
 		resolvedSidecar := ""
 		var sidecarResolutionError error
@@ -459,9 +428,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 			"attach_context":           selection.AttachContext,
 			"attachment_bytes":         attachmentBytes,
 			"uploads":                  uploadDescription(selection.Generator, selection.AttachContext),
-			"request_bytes":            serverRequestBytes,
 			"review":                   *review,
-			"ttl_seconds":              int64(ttl.Seconds()),
 		}
 		if sidecarResolutionError != nil {
 			report["runtime_error"] = card.Redact(sidecarResolutionError.Error())
@@ -472,11 +439,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	if err != nil {
 		return err
 	}
-	commandTimeout := 6 * time.Minute
-	if selection.Generator == "cloud" {
-		commandTimeout = 15 * time.Minute
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	apiClient := client.Client{Server: profile.Server}
 	sections := card.FallbackSections(intent, goal, contextSource)
@@ -503,25 +466,9 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	case "preserve":
 		sections = preserveSections
 		generator = "preserve"
-	case "cloud":
-		accessToken, authErr := opengroveauth.AccessToken(time.Now())
-		if authErr != nil {
-			return authErr
-		}
-		compactionClient := client.Client{Server: profile.Server, Token: accessToken}
-		preview, previewErr := compactionClient.PreviewServerCompaction(ctx, types.CompactRequest{
-			Intent: intent, Goal: goal, Context: contextSource,
-		})
-		if previewErr != nil {
-			return previewErr
-		}
-		if err := validateServerPreview(preview); err != nil {
-			return err
-		}
-		sections, generator = preview.Sections, preview.Generator
 	}
 	if *review {
-		sections, err = reviewSections(ctx, goal, contextSource, sections, generator, *ttl)
+		sections, err = reviewSections(ctx, goal, contextSource, sections, generator)
 		if err != nil {
 			return err
 		}
@@ -532,7 +479,6 @@ func runCreate(profileName, outputFormat string, args []string) error {
 			Kind: contextSource.Source, UpdatedAt: contextSource.UpdatedAt,
 		},
 		Sections: sections, Generator: generator, ContextAttachment: contextAttachment,
-		TTLSeconds: int64(ttl.Seconds()),
 	}
 	publishBody, encodeErr := json.Marshal(publishRequest)
 	if encodeErr != nil {
@@ -584,16 +530,6 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	return nil
 }
 
-func validateServerPreview(preview types.CompactPreviewResponse) error {
-	if preview.Warning != "" {
-		return fmt.Errorf("cloud generation failed: %s", preview.Warning)
-	}
-	if !strings.HasPrefix(preview.Generator, "server:") {
-		return fmt.Errorf("cloud generation failed: unexpected generator %q", preview.Generator)
-	}
-	return nil
-}
-
 func validateDeterministicScope(contextSource types.Context, review bool) error {
 	if review {
 		return nil
@@ -623,8 +559,7 @@ func formatShareMessage(result types.CreateResponse) string {
 	}
 	message.WriteString("\n🤖 **For Agent**\n\n")
 	fmt.Fprintf(&message, "请使用 OpenGrove Handoff 读取：`%s`\n\n", agentReference(result.Handoff.ID))
-	fmt.Fprintf(&message, "未安装时，请[查看安装方法](%s)。\n\n", installURL)
-	fmt.Fprintf(&message, "有效期：%s\n", result.Handoff.ExpiresAt.Local().Format(time.RFC3339))
+	fmt.Fprintf(&message, "未安装时，请[查看安装方法](%s)。\n", installURL)
 	return message.String()
 }
 
@@ -637,12 +572,6 @@ func markdownLinkLabel(value string) string {
 }
 
 func uploadDescription(generator string, attachContext bool) string {
-	if generator == "cloud" {
-		if attachContext {
-			return "canonical sanitized readable context for transient cloud generation, then generated sections plus the explicit context attachment for publishing"
-		}
-		return "canonical sanitized readable context for transient cloud generation, then generated sections only for publishing"
-	}
 	if generator == "preserve" {
 		if attachContext {
 			return "best-effort-redacted prepared Markdown plus the explicit full sanitized readable context attachment"
@@ -656,17 +585,16 @@ func uploadDescription(generator string, attachContext bool) string {
 }
 
 type createSelectionInput struct {
-	Source, Generator, Runtime, UploadContext          string
-	LegacyFrom, LegacyMode, LegacyCompact, LegacyAgent string
-	LegacyIncludeTranscript, LegacyFullSession         bool
-	AttachContext                                      bool
-	Set                                                map[string]bool
+	Source, Generator, Runtime          string
+	LegacyFrom, LegacyMode, LegacyAgent string
+	AttachContext                       bool
+	Set                                 map[string]bool
 }
 
 type createSelection struct {
-	Source, Generator, Runtime, UploadContext string
-	AttachContext, SessionPath                bool
-	Deprecated                                []string
+	Source, Generator, Runtime string
+	AttachContext, SessionPath bool
+	Deprecated                 []string
 }
 
 func resolveCreateSelection(input createSelectionInput) (createSelection, error) {
@@ -674,7 +602,6 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 		Source:        strings.ToLower(strings.TrimSpace(input.Source)),
 		Generator:     strings.ToLower(strings.TrimSpace(input.Generator)),
 		Runtime:       strings.ToLower(strings.TrimSpace(input.Runtime)),
-		UploadContext: strings.ToLower(strings.TrimSpace(input.UploadContext)),
 		AttachContext: input.AttachContext,
 	}
 	validRuntime := func(value string) bool {
@@ -689,11 +616,8 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 	if selection.Generator == "deterministic" {
 		return createSelection{}, errors.New("--generator deterministic is internal-only; use --generator preserve for prepared stdin/file Markdown, or omit --generator to use an Agent sidecar")
 	}
-	if selection.Generator != "agent" && selection.Generator != "preserve" && selection.Generator != "cloud" {
-		return createSelection{}, errors.New("--generator must be agent, preserve, or cloud")
-	}
-	if selection.UploadContext != "" && selection.UploadContext != "selected" && selection.UploadContext != "full" {
-		return createSelection{}, errors.New("--upload-context must be selected or full")
+	if selection.Generator != "agent" && selection.Generator != "preserve" {
+		return createSelection{}, errors.New("--generator must be agent or preserve")
 	}
 	applyAlias := func(canonicalName, canonicalValue, legacyName, legacyValue string, mapValue func(string) string) error {
 		if !input.Set[legacyName] {
@@ -730,12 +654,12 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 		return createSelection{}, err
 	}
 	modeMap := func(value string) string {
-		return map[string]string{"agent": "agent", "local": "preserve", "server": "cloud", "session": "session"}[value]
+		return map[string]string{"agent": "agent", "local": "preserve", "session": "session"}[value]
 	}
 	if input.Set["mode"] {
 		mapped := modeMap(strings.ToLower(strings.TrimSpace(input.LegacyMode)))
 		if mapped == "" {
-			return createSelection{}, errors.New("deprecated --mode must be agent, local, server, or session")
+			return createSelection{}, errors.New("deprecated --mode must be agent, local, or session")
 		}
 		if mapped == "session" {
 			if input.Set["generator"] {
@@ -749,35 +673,6 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 		}
 		selection.Deprecated = append(selection.Deprecated, "--mode is deprecated; use --generator or `handoff session locate`")
 	}
-	if input.Set["compact"] {
-		mapped := map[string]string{"current": "agent", "none": "preserve", "server": "cloud"}[strings.ToLower(strings.TrimSpace(input.LegacyCompact))]
-		if mapped == "" {
-			return createSelection{}, errors.New("deprecated --compact must be current, none, or server")
-		}
-		if (input.Set["generator"] || input.Set["mode"]) && selection.Generator != mapped {
-			return createSelection{}, fmt.Errorf("generator selection conflicts with deprecated --compact %s", input.LegacyCompact)
-		}
-		selection.Generator = mapped
-		selection.Deprecated = append(selection.Deprecated, "--compact is deprecated; use --generator")
-	}
-	legacyUpload := ""
-	if input.LegacyIncludeTranscript {
-		legacyUpload = "selected"
-		selection.Deprecated = append(selection.Deprecated, "--include-transcript is deprecated; cloud generation now implies transient sanitized Context processing")
-	}
-	if input.LegacyFullSession {
-		legacyUpload = "full"
-		selection.Deprecated = append(selection.Deprecated, "--full-session is deprecated; canonical Context is now always complete (use --attach-context to persist it)")
-	}
-	if legacyUpload != "" {
-		if input.Set["upload-context"] && selection.UploadContext != legacyUpload {
-			return createSelection{}, errors.New("--upload-context conflicts with deprecated upload flags")
-		}
-		selection.UploadContext = legacyUpload
-	}
-	if input.Set["upload-context"] {
-		selection.Deprecated = append(selection.Deprecated, "--upload-context is deprecated; cloud generation now always uses canonical Context transiently")
-	}
 	if input.Set["stdin"] {
 		selection.Deprecated = append(selection.Deprecated, "--stdin is deprecated; pipe input without the flag")
 	}
@@ -785,23 +680,6 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 		return createSelection{}, fmt.Errorf("--runtime only selects the local sidecar for --generator agent; it cannot be used with --generator %s", selection.Generator)
 	}
 	return selection, nil
-}
-
-// resolveCreateMode remains as a compatibility helper for downstream tests and
-// integrations. New code should use resolveCreateSelection.
-func resolveCreateMode(mode, legacyCompact string, modeExplicit, compactExplicit bool) (string, error) {
-	set := map[string]bool{"mode": modeExplicit, "compact": compactExplicit}
-	selection, err := resolveCreateSelection(createSelectionInput{
-		Source: "auto", Generator: "agent", Runtime: "auto",
-		LegacyMode: mode, LegacyCompact: legacyCompact, Set: set,
-	})
-	if err != nil {
-		return "", err
-	}
-	if selection.SessionPath {
-		return "session", nil
-	}
-	return map[string]string{"agent": "agent", "preserve": "local", "cloud": "server"}[selection.Generator], nil
 }
 
 func runSession(_ string, outputFormat string, args []string) error {
@@ -872,7 +750,7 @@ func formatLocalSessionMessage(goal, sourceKind, sessionPath string) string {
 	return message.String()
 }
 
-func reviewSections(ctx context.Context, goal string, sourceContext types.Context, sections types.Sections, generator string, ttl time.Duration) (types.Sections, error) {
+func reviewSections(ctx context.Context, goal string, sourceContext types.Context, sections types.Sections, generator string) (types.Sections, error) {
 	now := time.Now().UTC()
 	draft := types.Handoff{
 		Version: types.ProtocolVersion, ID: "review-draft", Goal: goal, Intent: sections.Intent,
@@ -880,7 +758,7 @@ func reviewSections(ctx context.Context, goal string, sourceContext types.Contex
 			Kind: sourceContext.Source, SessionID: sourceContext.SessionID,
 			Cursor: sourceContext.Cursor, UpdatedAt: sourceContext.UpdatedAt,
 		},
-		Generator: generator, CreatedAt: now, ExpiresAt: now.Add(ttl),
+		Generator: generator, CreatedAt: now,
 	}
 	file, err := os.CreateTemp("", "handoff-review-*.md")
 	if err != nil {
@@ -1072,7 +950,7 @@ func runDelete(profileName, outputFormat string, args []string) error {
 	flags := flag.NewFlagSet("handoff delete", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	flags.Usage = func() {
-		fmt.Fprint(os.Stdout, "Permanently delete an exact handoff before expiry.\n\nUsage:\n  handoff delete <reference|code|url> --yes\n\nRisk: high-risk-write\n")
+		fmt.Fprint(os.Stdout, "Permanently delete an exact handoff.\n\nUsage:\n  handoff delete <reference|code|url> --yes\n\nRisk: high-risk-write\n")
 	}
 	yes := flags.Bool("yes", false, "confirm deletion")
 	if err := flags.Parse(args); err != nil {
@@ -1200,15 +1078,12 @@ func runAdmin(profileName, outputFormat string, args []string) error {
 			}
 			return errors.New("usage: handoff admin status")
 		}
-		_, openGroveAuthErr := opengroveauth.AccessToken(time.Now())
 		status := map[string]any{
 			"profile": name, "server": profile.Server,
-			"opengrove_authenticated": openGroveAuthErr == nil,
-			"admin_token_configured":  profile.Token != "",
+			"admin_token_configured": profile.Token != "",
 		}
 		if outputFormat == "text" {
-			fmt.Printf("OpenGrove login: %s\nServer: %s\nAdministrator credential: %s\n",
-				boolWord(openGroveAuthErr == nil), profile.Server, boolWord(profile.Token != ""))
+			fmt.Printf("Server: %s\nAdministrator credential: %s\n", profile.Server, boolWord(profile.Token != ""))
 			return nil
 		}
 		return printJSON(status)
@@ -1308,10 +1183,8 @@ func runDoctor(profileName, outputFormat string, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, openGroveAuthErr := opengroveauth.AccessToken(time.Now())
 	checks := []map[string]any{
 		{"check": "profile", "ok": true, "detail": name},
-		{"check": "opengrove_login", "ok": openGroveAuthErr == nil, "detail": boolDetail(openGroveAuthErr == nil, "available for cloud generation", "not logged in; only cloud generation is unavailable")},
 	}
 	contextSource, sourceErr := source.Load(source.Options{Kind: "auto", NoGit: true})
 	if sourceErr != nil {
@@ -1346,72 +1219,6 @@ func runDoctor(profileName, outputFormat string, args []string) error {
 	}
 	if failed {
 		return errors.New("doctor found blocking problems")
-	}
-	return nil
-}
-
-func runWhoAmI(profileName, outputFormat string, args []string) error {
-	if wantsHelp(args) {
-		fmt.Print("Show OpenGrove identity and effective Handoff capabilities.\n\nUsage:\n  handoff whoami\n\nRisk: read\n")
-		return nil
-	}
-	if len(args) != 0 {
-		return errors.New("usage: handoff whoami")
-	}
-	name, profile, err := loadProfile(profileName)
-	if err != nil {
-		return err
-	}
-	token, tokenErr := opengroveauth.AccessToken(time.Now())
-	authenticated := false
-	var user opengroveauth.User
-	var verificationError string
-	if tokenErr == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		baseURL := strings.TrimSpace(os.Getenv("OPENGROVE_WW_BASE_URL"))
-		user, err = opengroveauth.CurrentUser(ctx, baseURL, token, nil)
-		if err != nil {
-			verificationError = err.Error()
-		} else {
-			authenticated = user.UserID != ""
-		}
-	}
-	value := map[string]any{
-		"cli": map[string]any{
-			"name":    "opengrove-handoff",
-			"version": version,
-		},
-		"profile": name,
-		"server":  profile.Server,
-		"opengrove": map[string]any{
-			"authenticated": authenticated,
-			"user":          user,
-			"error":         verificationError,
-		},
-		"capabilities": map[string]any{
-			"publish":            true,
-			"receive":            true,
-			"cloud_generation":   authenticated,
-			"publish_login":      "not required",
-			"cloud_login":        "OpenGrove required",
-			"administrator_mode": profile.Token != "",
-		},
-	}
-	if outputFormat == "json" {
-		return printJSON(value)
-	}
-	identity := "未登录"
-	if authenticated {
-		identity = user.Email
-		if identity == "" {
-			identity = user.UserID
-		}
-	}
-	fmt.Printf("Handoff: v%s\nServer: %s\nOpenGrove: %s\n云端生成: %s\n匿名发布与读取: 可用\n",
-		version, profile.Server, identity, boolAvailability(authenticated))
-	if verificationError != "" {
-		fmt.Println("登录校验异常: " + verificationError)
 	}
 	return nil
 }
@@ -1495,7 +1302,7 @@ func runSchema(outputFormat string, args []string) error {
 	commands := []string{
 		"create", "session.locate", "receive", "context", "delete",
 		"admin.login", "admin.status", "admin.logout",
-		"config.show", "config.set-server", "doctor", "whoami",
+		"config.show", "config.set-server", "doctor",
 		"update", "skills.list", "skills.read", "skills.install", "version",
 	}
 	if len(args) == 0 {
@@ -1538,13 +1345,12 @@ func schemaContract(command string) (map[string]any, error) {
 					"goal":           stringProperty("Short topic for share intent or next goal for continue intent."),
 					"intent":         map[string]any{"type": "string", "enum": []string{"auto", "share", "continue"}, "default": "auto", "description": "Choose a discussion-result share or resumable task handoff."},
 					"source":         map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto", "description": "Select only the input Agent Session. Do not combine a non-auto value with file or piped stdin input."},
-					"generator":      map[string]any{"type": "string", "enum": []string{"agent", "preserve", "cloud"}, "default": "agent", "description": "Choose how sections are produced. agent starts a fresh isolated local sidecar; preserve publishes prepared stdin/file Markdown without a second Agent rewrite; cloud uses transient OpenGrove generation. Deterministic extraction is internal fallback only."},
+					"generator":      map[string]any{"type": "string", "enum": []string{"agent", "preserve"}, "default": "agent", "description": "Choose how sections are produced. agent starts a fresh isolated local sidecar; preserve publishes prepared stdin/file Markdown without a second Agent rewrite. Deterministic extraction is internal fallback only."},
 					"runtime":        map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto", "description": "Select only the fresh local sidecar CLI used by generator=agent. It never selects the input source or model and must remain auto for other generators."},
 					"attach_context": booleanProperty("Persist the complete sanitized readable Context beside the handoff, independently of the generator."),
 					"review":         booleanProperty("Edit generated Markdown before publishing."),
 					"file":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable input context file path. Files replace Agent Session discovery, so leave source=auto."},
 					"no_git":         booleanProperty("Omit repository metadata."),
-					"ttl":            map[string]any{"type": "string", "default": "168h", "description": "Go duration for the handoff lifetime."},
 					"json":           booleanProperty("Print machine-readable output."),
 					"dry_run":        booleanProperty("Inspect source and upload behavior without an Agent or network write."),
 					"output":         stringProperty("Also write HANDOFF.md to this path."),
@@ -1559,12 +1365,11 @@ func schemaContract(command string) (map[string]any, error) {
 				"default_model_config": "the local sidecar inherits its CLI's existing provider and default model; --runtime never selects either",
 				"canonical_context":    "all readable user/assistant messages after normalization and best-effort redaction; excludes thinking and tool results",
 				"native_compact":       "a readable native compact summary is auxiliary evidence; it never replaces the canonical message history and native /compact is never invoked",
-				"cloud_auth":           "requires an active local OpenGrove login; publishing does not require login",
-				"cloud_processing":     "cloud generation temporarily receives canonical sanitized Context and does not persist it unless --attach-context is also set",
 				"context_attachment":   "explicit opt-in; readable messages only, no thinking or tool results; best-effort redaction cannot guarantee removal of every natural-language identifier",
-				"agent_interaction":    "infer share vs continue and ask only on material ambiguity; default to local agent generation with no Context attachment; use preserve when exact prepared Prompt/URL/checksum/code must survive without a second Agent rewrite; cloud and attachment require explicit user request; source/runtime are internal auto-routing",
+				"agent_interaction":    "infer share vs continue and ask only on material ambiguity; default to local agent generation with no Context attachment; use preserve when exact prepared Prompt/URL/checksum/code must survive without a second Agent rewrite; attachment requires explicit user request; source/runtime are internal auto-routing",
 				"agent_auto_update":    "macOS/Linux Agent invocations check at most once per 24 hours; status is stderr-only, failures do not block, --dry-run skips it, and HANDOFF_NO_AUTO_UPDATE=1 disables it",
-				"legacy":               "--upload-context, --mode, --from, --agent, --include-transcript, --full-session, --stdin, and --compact are accepted temporarily but omitted from the preferred contract",
+				"lifetime":             "permanent until explicitly deleted",
+				"legacy":               "--ttl is ignored; --mode, --from, --agent, and --stdin are accepted temporarily but omitted from the preferred contract",
 			},
 		}, nil
 	case "session.locate":
@@ -1609,7 +1414,7 @@ func schemaContract(command string) (map[string]any, error) {
 		}, nil
 	case "delete":
 		return map[string]any{
-			"name": "handoff delete", "description": "Permanently delete a handoff before expiry using its locally saved owner credential or an administrator credential.",
+			"name": "handoff delete", "description": "Permanently delete a handoff using its locally saved owner credential or an administrator credential.",
 			"inputSchema": map[string]any{
 				"type": "object", "required": []string{"code_or_url", "yes"}, "additionalProperties": false,
 				"properties": map[string]any{
@@ -1625,7 +1430,7 @@ func schemaContract(command string) (map[string]any, error) {
 			"_meta": meta("high-risk-write"),
 		}, nil
 	case "admin.login":
-		return commandContractWithOutput("handoff admin login", "Store an optional service administrator credential. This is not OpenGrove login.", "write", map[string]any{
+		return commandContractWithOutput("handoff admin login", "Store an optional service administrator credential.", "write", map[string]any{
 			"server":      stringProperty("Handoff service URL for administrator login."),
 			"token_stdin": booleanProperty("Read the administrator token from stdin."),
 		}, nil, objectSchema(map[string]any{
@@ -1635,11 +1440,10 @@ func schemaContract(command string) (map[string]any, error) {
 		}, "logged_in", "profile", "server")), nil
 	case "admin.status":
 		return commandContractWithOutput("handoff admin status", "Show whether an administrator credential is configured.", "read", map[string]any{}, nil, objectSchema(map[string]any{
-			"profile":                 stringProperty("Active configuration profile."),
-			"server":                  map[string]any{"type": "string", "format": "uri"},
-			"opengrove_authenticated": booleanProperty("Whether local OpenGrove user login is available for cloud generation."),
-			"admin_token_configured":  booleanProperty("Whether a service administrator credential is configured."),
-		}, "profile", "server", "opengrove_authenticated", "admin_token_configured")), nil
+			"profile":                stringProperty("Active configuration profile."),
+			"server":                 map[string]any{"type": "string", "format": "uri"},
+			"admin_token_configured": booleanProperty("Whether a service administrator credential is configured."),
+		}, "profile", "server", "admin_token_configured")), nil
 	case "admin.logout":
 		return commandContractWithOutput("handoff admin logout", "Remove the local service administrator credential.", "write", map[string]any{}, nil, objectSchema(map[string]any{
 			"logged_out": map[string]any{"type": "boolean", "const": true},
@@ -1660,7 +1464,7 @@ func schemaContract(command string) (map[string]any, error) {
 			"server":  map[string]any{"type": "string", "format": "uri"},
 		}, "profile", "server")), nil
 	case "doctor":
-		return commandContractWithOutput("handoff doctor", "Check Session discovery, current Agent host and sidecar CLI, OpenGrove login, and service connectivity.", "read", map[string]any{
+		return commandContractWithOutput("handoff doctor", "Check Session discovery, current Agent host and sidecar CLI, and service connectivity.", "read", map[string]any{
 			"offline": booleanProperty("Skip service connectivity."),
 		}, nil, objectSchema(map[string]any{
 			"ok": map[string]any{"type": "boolean"},
@@ -1673,8 +1477,6 @@ func schemaContract(command string) (map[string]any, error) {
 				}, "check", "ok", "detail"),
 			},
 		}, "ok", "checks")), nil
-	case "whoami":
-		return commandContractWithOutput("handoff whoami", "Show CLI version, service, OpenGrove identity, and cloud-generation availability.", "read", map[string]any{}, nil, whoAmIOutputSchema()), nil
 	case "update":
 		return commandContractWithOutput("handoff update", "Check for or install a SHA-256 verified GitHub release.", "high-risk-write", map[string]any{
 			"check": booleanProperty("Only check; do not replace the executable."),
@@ -1787,7 +1589,7 @@ func receiveOutputSchema() map[string]any {
 
 func handoffSchema() map[string]any {
 	return map[string]any{
-		"type": "object", "required": []string{"version", "id", "goal", "markdown", "generator", "created_at", "expires_at"},
+		"type": "object", "required": []string{"version", "id", "goal", "markdown", "generator", "created_at"},
 		"properties": map[string]any{
 			"version":    map[string]any{"type": "integer"},
 			"id":         map[string]any{"type": "string"},
@@ -1797,7 +1599,6 @@ func handoffSchema() map[string]any {
 			"generator":  map[string]any{"type": "string"},
 			"context":    map[string]any{"type": "object", "description": "Present only when a full sanitized Context attachment is available."},
 			"created_at": map[string]any{"type": "string", "format": "date-time"},
-			"expires_at": map[string]any{"type": "string", "format": "date-time"},
 		},
 	}
 }
@@ -1842,30 +1643,6 @@ func objectSchema(properties map[string]any, required ...string) map[string]any 
 		schema["required"] = required
 	}
 	return schema
-}
-
-func whoAmIOutputSchema() map[string]any {
-	return objectSchema(map[string]any{
-		"cli": objectSchema(map[string]any{
-			"name":    map[string]any{"type": "string", "const": "opengrove-handoff"},
-			"version": map[string]any{"type": "string"},
-		}, "name", "version"),
-		"profile": map[string]any{"type": "string"},
-		"server":  map[string]any{"type": "string", "format": "uri"},
-		"opengrove": objectSchema(map[string]any{
-			"authenticated": map[string]any{"type": "boolean"},
-			"user":          map[string]any{"type": "object"},
-			"error":         map[string]any{"type": "string"},
-		}, "authenticated", "user", "error"),
-		"capabilities": objectSchema(map[string]any{
-			"publish":            map[string]any{"type": "boolean"},
-			"receive":            map[string]any{"type": "boolean"},
-			"cloud_generation":   map[string]any{"type": "boolean"},
-			"publish_login":      map[string]any{"type": "string"},
-			"cloud_login":        map[string]any{"type": "string"},
-			"administrator_mode": map[string]any{"type": "boolean"},
-		}, "publish", "receive", "cloud_generation", "publish_login", "cloud_login", "administrator_mode"),
-	}, "cli", "profile", "server", "opengrove", "capabilities")
 }
 
 func updateOutputSchema() map[string]any {
@@ -2156,13 +1933,6 @@ func writeJSON(writer io.Writer, value any) error {
 	return encoder.Encode(value)
 }
 
-func boolDetail(value bool, yes, no string) string {
-	if value {
-		return yes
-	}
-	return no
-}
-
 func wantsHelp(args []string) bool {
 	for _, argument := range args {
 		if argument == "--help" || argument == "-h" || argument == "help" {
@@ -2274,13 +2044,6 @@ func boolWord(value bool) string {
 		return "已配置"
 	}
 	return "未配置"
-}
-
-func boolAvailability(value bool) string {
-	if value {
-		return "可用"
-	}
-	return "不可用（需要 OpenGrove 登录）"
 }
 
 func boolMarker(value bool) string {

@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -15,27 +14,20 @@ import (
 	"github.com/open-grove/handoff/internal/types"
 )
 
-type previewCompactor struct{}
-
-func (previewCompactor) Compact(_ context.Context, _, _ string, _ types.Context) (types.Sections, error) {
-	return types.Sections{Context: "review me", CurrentState: "ready", NextSteps: []string{"continue"}}, nil
-}
-
-func (previewCompactor) Generator() string { return "server:test" }
-
 func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := &API{Store: store, Token: "create-token", PublicURL: "https://handoff.example", DefaultTTL: time.Hour}
+	api := &API{Store: store, Token: "create-token", PublicURL: "https://handoff.example"}
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
 
 	input := types.PublishRequest{
-		Goal:      "continue implementation",
-		Source:    types.SourceRef{Kind: "codex", SessionID: "session-1"},
-		Generator: "agent:codex",
+		Goal:       "continue implementation",
+		Source:     types.SourceRef{Kind: "codex", SessionID: "session-1"},
+		Generator:  "agent:codex",
+		TTLSeconds: 1, // Legacy clients may still send this; it is ignored.
 		Sections: types.Sections{
 			Context: "api_key=super-secret-value\nparser is complete", CurrentState: "Ready",
 			NextSteps: []string{"Continue"},
@@ -59,6 +51,10 @@ func TestCreateReceiveDeleteRoundTrip(t *testing.T) {
 	}
 	if len(created.Handoff.ID) != 22 || !strings.Contains(created.ShareURL, created.Handoff.ID) || created.MarkdownURL != created.ShareURL+".md" || created.DeleteToken == "" {
 		t.Fatalf("unexpected create response: %#v", created)
+	}
+	createdJSON, _ := json.Marshal(created)
+	if strings.Contains(string(createdJSON), "expires_at") || strings.Contains(created.Handoff.Markdown, "expires_at") {
+		t.Fatalf("permanent handoff exposed legacy expiry metadata: %s", createdJSON)
 	}
 	if strings.Contains(created.Handoff.Markdown, "super-secret-value") {
 		t.Fatal("secret leaked into handoff")
@@ -144,7 +140,7 @@ func TestPublishAndFetchExplicitContextAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer((&API{Store: store, PublicURL: "https://handoff.example", DefaultTTL: time.Hour}).Handler())
+	server := httptest.NewServer((&API{Store: store, PublicURL: "https://handoff.example"}).Handler())
 	defer server.Close()
 
 	input := types.PublishRequest{
@@ -214,7 +210,7 @@ func TestPublishAndFetchExplicitContextAttachment(t *testing.T) {
 	}
 }
 
-func TestStoreExpiresHandoff(t *testing.T) {
+func TestStoreKeepsHandoffUntilDeleted(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -223,13 +219,12 @@ func TestStoreExpiresHandoff(t *testing.T) {
 		Version:   types.ProtocolVersion,
 		ID:        "abcdefghijklmnopqrstuv",
 		CreatedAt: time.Now().Add(-time.Hour),
-		ExpiresAt: time.Now().Add(-time.Minute),
 	}
 	if err := store.Save(handoff); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Get(handoff.ID); !os.IsNotExist(err) {
-		t.Fatalf("expired handoff returned: %v", err)
+	if _, err := store.Get(handoff.ID); err != nil {
+		t.Fatalf("permanent handoff was not returned: %v", err)
 	}
 }
 
@@ -238,7 +233,7 @@ func TestDefaultPublishEndpointRejectsRawContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer((&API{Store: store, DefaultTTL: time.Hour}).Handler())
+	server := httptest.NewServer((&API{Store: store}).Handler())
 	defer server.Close()
 
 	body := `{"goal":"continue","context":{"source":"stdin","messages":[{"role":"user","text":"raw transcript"}]}}`
@@ -249,54 +244,5 @@ func TestDefaultPublishEndpointRejectsRawContext(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("raw context status = %d", response.StatusCode)
-	}
-}
-
-func TestCompactPreviewDoesNotStoreHandoff(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer((&API{
-		Store: store, Compactor: previewCompactor{}, DefaultTTL: time.Hour,
-		VerifyOpenGroveUser: func(_ context.Context, token string) (bool, error) {
-			return token == "opengrove-access", nil
-		},
-	}).Handler())
-	defer server.Close()
-	body := `{"goal":"continue","context":{"source":"stdin","messages":[{"role":"user","text":"raw transcript"}]}}`
-	unauthorized, err := http.Post(server.URL+"/v1/handoffs/compact-preview", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	unauthorized.Body.Close()
-	if unauthorized.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("unauthorized preview status = %d", unauthorized.StatusCode)
-	}
-	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/handoffs/compact-preview", strings.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer opengrove-access")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(response.Body)
-		t.Fatalf("preview status = %d: %s", response.StatusCode, data)
-	}
-	var preview types.CompactPreviewResponse
-	if err := json.NewDecoder(response.Body).Decode(&preview); err != nil {
-		t.Fatal(err)
-	}
-	if preview.Generator != "server:test" || preview.Sections.Context != "review me" {
-		t.Fatalf("unexpected preview: %#v", preview)
-	}
-	entries, err := os.ReadDir(store.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("preview persisted %d files", len(entries))
 	}
 }

@@ -3,7 +3,7 @@ package types
 import "time"
 
 const (
-	ProtocolVersion          = 6
+	ProtocolVersion          = 7
 	ContextAttachmentVersion = 1
 	RedactionVersion         = "best-effort-v1"
 )
@@ -78,24 +78,6 @@ type ContextResponse struct {
 	Context   ContextAttachment `json:"context"`
 }
 
-// CompactRequest asks the handoff server to generate sections from retained
-// context. It is an explicit opt-in path; the CLI normally uses the current
-// Agent and publishes only Sections.
-type CompactRequest struct {
-	Intent     string  `json:"intent,omitempty"`
-	Goal       string  `json:"goal"`
-	Context    Context `json:"context"`
-	TTLSeconds int64   `json:"ttl_seconds,omitempty"`
-}
-
-// CompactPreviewResponse returns generated sections without publishing a
-// handoff. This lets the CLI review and edit the artifact before it is stored.
-type CompactPreviewResponse struct {
-	Sections  Sections `json:"sections"`
-	Generator string   `json:"generator"`
-	Warning   string   `json:"warning,omitempty"`
-}
-
 type Sections struct {
 	Intent          string         `json:"intent,omitempty"`
 	HumanBackground string         `json:"human_background,omitempty"`
@@ -138,7 +120,8 @@ type PublishRequest struct {
 	Sections          Sections           `json:"sections"`
 	Generator         string             `json:"generator"`
 	ContextAttachment *ContextAttachment `json:"context_attachment,omitempty"`
-	TTLSeconds        int64              `json:"ttl_seconds,omitempty"`
+	// TTLSeconds is accepted for compatibility with older clients and ignored.
+	TTLSeconds int64 `json:"ttl_seconds,omitempty"`
 }
 
 type Handoff struct {
@@ -152,7 +135,6 @@ type Handoff struct {
 	Generator string       `json:"generator"`
 	Context   *ContextInfo `json:"context,omitempty"`
 	CreatedAt time.Time    `json:"created_at"`
-	ExpiresAt time.Time    `json:"expires_at"`
 }
 
 type CreateResponse struct {

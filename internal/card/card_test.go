@@ -1,10 +1,7 @@
 package card
 
 import (
-	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -143,7 +140,7 @@ func TestSinglePreserveDocumentDoesNotRepeatFileNameOrMatchingH1(t *testing.T) {
 	if sections.HumanSections[0].Title != "正文" || sections.HumanSections[0].Body != "## 目的\n\n验证长流。" {
 		t.Fatalf("single preserve presentation was not normalized: %#v", sections.HumanSections[0])
 	}
-	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", goal, types.SourceRef{Kind: "file"}, sections, "preserve", time.Now().UTC(), time.Now().UTC().Add(time.Hour))
+	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", goal, types.SourceRef{Kind: "file"}, sections, "preserve", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,12 +296,13 @@ func TestContextAttachmentOmitsProviderLocalIdentifiers(t *testing.T) {
 
 func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 	now := time.Date(2026, 7, 22, 8, 0, 0, 0, time.UTC)
-	handoff, err := Build(context.Background(), nil, "abcdefghijklmnopqrstuv", IntentContinue, "continue the CLI", types.Context{
+	source := types.Context{
 		Source:   "stdin",
 		Cursor:   "input:1",
 		Messages: []types.Message{{Role: "user", Text: "The parser is complete."}},
 		Repo:     types.Repository{Branch: "main", Commit: "abc123", ChangedFiles: []string{"main.go"}},
-	}, now, now.Add(24*time.Hour))
+	}
+	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", "continue the CLI", types.SourceRef{Kind: source.Source}, FallbackSections(IntentContinue, "continue the CLI", source), "deterministic", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +314,7 @@ func TestBuildDeterministicHandoffHasStableContract(t *testing.T) {
 			t.Fatalf("handoff missing %s", heading)
 		}
 	}
-	if !strings.Contains(handoff.Markdown, "version: 6") || !strings.Contains(handoff.Markdown, "continue the CLI") {
+	if !strings.Contains(handoff.Markdown, "version: 7") || !strings.Contains(handoff.Markdown, "continue the CLI") {
 		t.Fatalf("unexpected handoff:\n%s", handoff.Markdown)
 	}
 	receiverInstruction := "> 这是一份被传递的 Handoff。请先用清晰易懂的话向用户简单介绍当前背景，然后询问用户下一步要怎么做。\n"
@@ -338,7 +336,7 @@ func TestShareHandoffPrioritizesDiscussionResults(t *testing.T) {
 		Decisions:      []string{"保留 MCP App 通信通道。"},
 		ImportantFiles: []string{"internal/card/card.go"},
 		OpenQuestions:  []string{"未来是否需要官方 App 信任分级？"},
-	}, "agent:codex", now, now.Add(time.Hour))
+	}, "agent:codex", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +374,7 @@ func TestLegacyShareBucketsRemainPublishable(t *testing.T) {
 	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", "legacy share", types.SourceRef{Kind: "codex"}, Sections{
 		Intent: IntentShare, HumanBackground: "Background", HumanSummary: "Summary",
 		KeyConclusions: []string{"Conclusion"}, Reasoning: []string{"Reason"}, Context: "Technical",
-	}, "agent:legacy", now, now.Add(time.Hour))
+	}, "agent:legacy", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +398,7 @@ func TestCompactTitleKeepsFullGoalInAgentSection(t *testing.T) {
 	now := time.Date(2026, 7, 23, 8, 0, 0, 0, time.UTC)
 	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", goal, types.SourceRef{Kind: "codex"}, Sections{
 		Context: "Known", CurrentState: "Ready", NextSteps: []string{"Continue"},
-	}, "agent:codex", now, now.Add(time.Hour))
+	}, "agent:codex", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +419,7 @@ func TestHTMLSeparatesHumanSummaryFromAgentContext(t *testing.T) {
 		Context:         "CLI and service are implemented.",
 		CurrentState:    "Tests pass.",
 		NextSteps:       []string{"Deploy"},
-	}, "agent:codex", now, now.Add(24*time.Hour))
+	}, "agent:codex", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +511,7 @@ func TestImportantFilesAreRepositoryRelative(t *testing.T) {
 			"../outside.txt",
 		},
 		NextSteps: []string{"Continue"},
-	}, "agent:codex", now, now.Add(time.Hour))
+	}, "agent:codex", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +532,7 @@ func TestParseReviewedMarkdownRoundTrip(t *testing.T) {
 	draft := types.Handoff{
 		Version: types.ProtocolVersion, ID: "review-draft", Goal: "continue",
 		Source: types.SourceRef{Kind: "codex"}, Generator: "agent:codex",
-		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now,
 	}
 	markdown := RenderReviewDraft(draft, Sections{
 		HumanBackground: "Background", HumanStatus: "Ready", HumanTodos: []string{"Ship"},
@@ -556,7 +554,7 @@ func TestParseReviewedShareMarkdownRoundTrip(t *testing.T) {
 	draft := types.Handoff{
 		Version: types.ProtocolVersion, ID: "review-draft", Goal: "share discussion", Intent: IntentShare,
 		Source: types.SourceRef{Kind: "codex"}, Generator: "agent:codex",
-		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now,
 	}
 	markdown := RenderReviewDraft(draft, Sections{
 		Intent: IntentShare,
@@ -585,10 +583,9 @@ func TestMarkdownTitleEscapesFormattingWithoutDroppingText(t *testing.T) {
 
 func TestHTMLRendersMarkdownWithoutRawHTML(t *testing.T) {
 	page := HTML(types.Handoff{
-		ID:        "abcdefghijklmnopqrstuv",
-		Goal:      "Continue safely",
-		Markdown:  "---\nversion: 2\n---\n\n# Handoff\n\n## Current State\n\nReady.\n\n<script>alert('no')</script>",
-		ExpiresAt: time.Date(2026, 7, 29, 8, 0, 0, 0, time.UTC),
+		ID:       "abcdefghijklmnopqrstuv",
+		Goal:     "Continue safely",
+		Markdown: "---\nversion: 2\n---\n\n# Handoff\n\n## Current State\n\nReady.\n\n<script>alert('no')</script>",
 	})
 	if !strings.Contains(page, "<h1>Handoff</h1>") || !strings.Contains(page, "<h2>Current State</h2>") {
 		t.Fatalf("Markdown was not rendered: %s", page)
@@ -629,83 +626,5 @@ func TestHTMLMathRenderingCannotInjectRawHTML(t *testing.T) {
 	}
 	if !strings.Contains(page, `class="math-source"`) {
 		t.Fatalf("unsupported math did not fall back to escaped source: %s", page)
-	}
-}
-
-type invalidCompactor struct{}
-
-func (invalidCompactor) Compact(context.Context, string, string, types.Context) (Sections, error) {
-	return Sections{Context: "only context"}, nil
-}
-
-type namedCompactor struct{}
-
-func (namedCompactor) Compact(context.Context, string, string, types.Context) (Sections, error) {
-	return Sections{Context: "Known", CurrentState: "Ready", NextSteps: []string{"Continue"}}, nil
-}
-func (namedCompactor) Generator() string { return "server:agent-plan" }
-
-func TestBuildUsesNamedCompactorGenerator(t *testing.T) {
-	now := time.Now().UTC()
-	handoff, err := Build(context.Background(), namedCompactor{}, "abcdefghijklmnopqrstuv", IntentContinue, "continue", types.Context{
-		Source: "stdin", Messages: []types.Message{{Role: "user", Text: "known state"}},
-	}, now, now.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if handoff.Generator != "server:agent-plan" || !strings.Contains(handoff.Markdown, `generator: "server:agent-plan"`) {
-		t.Fatalf("unexpected generator: %q", handoff.Generator)
-	}
-}
-
-func TestBuildFallsBackWhenModelContractIsIncomplete(t *testing.T) {
-	now := time.Now().UTC()
-	handoff, err := Build(context.Background(), invalidCompactor{}, "abcdefghijklmnopqrstuv", IntentContinue, "continue", types.Context{
-		Source:   "stdin",
-		Messages: []types.Message{{Role: "user", Text: "known state"}},
-	}, now, now.Add(time.Hour))
-	if err == nil {
-		t.Fatal("expected generation contract error")
-	}
-	if handoff.Generator != "deterministic" {
-		t.Fatalf("generator = %q", handoff.Generator)
-	}
-}
-
-func TestAgentPlanCompactorUsesAnthropicCompatibleContract(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/v1/messages" || request.Header.Get("Authorization") != "Bearer secret" {
-			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
-		}
-		if request.Header.Get("anthropic-version") != "2023-06-01" {
-			t.Fatalf("anthropic-version = %q", request.Header.Get("anthropic-version"))
-		}
-		var body map[string]any
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		if body["model"] != "model-1" {
-			t.Fatalf("model = %#v", body["model"])
-		}
-		if body["max_tokens"] != float64(16384) || body["system"] == nil {
-			t.Fatalf("invalid Anthropic request: %#v", body)
-		}
-		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"content":[{"type":"text","text":"` +
-			`{\"human_background\":\"A handoff tool\",\"human_status\":\"Ready\",\"human_todos\":[\"Continue\"],\"context\":\"Known context\",\"decisions\":[],\"current_state\":\"Ready\",\"important_files\":[],\"next_steps\":[\"Continue\"],\"open_questions\":[]}` +
-			`"}]}`))
-	}))
-	defer server.Close()
-
-	compactor := AgentPlanCompactor{BaseURL: server.URL, APIKey: "secret", Model: "model-1", Client: server.Client()}
-	sections, err := compactor.Compact(context.Background(), IntentContinue, "Continue", types.Context{Source: "stdin", Messages: []types.Message{{Role: "user", Text: "Ready"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sections.HumanBackground != "A handoff tool" || sections.Context != "Known context" || len(sections.NextSteps) != 1 {
-		t.Fatalf("sections = %#v", sections)
-	}
-	if compactor.Generator() != "server:agent-plan" {
-		t.Fatalf("generator = %q", compactor.Generator())
 	}
 }

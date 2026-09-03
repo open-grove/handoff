@@ -270,10 +270,9 @@ func TestParseHandoffRefRejectsInvalidValues(t *testing.T) {
 }
 
 func TestFormatShareMessageSeparatesHumanAndAgentInstructions(t *testing.T) {
-	expiresAt := time.Date(2026, time.July, 29, 19, 42, 0, 0, time.Local)
 	result := types.CreateResponse{
 		Handoff: types.Handoff{
-			ID: "abcdefghijklmnopqrstuv", Goal: "完成 [CLI]\n部署", ExpiresAt: expiresAt,
+			ID: "abcdefghijklmnopqrstuv", Goal: "完成 [CLI]\n部署",
 		},
 		ShareURL: "https://handoff.openmau.com/h/abcdefghijklmnopqrstuv",
 	}
@@ -284,7 +283,6 @@ func TestFormatShareMessageSeparatesHumanAndAgentInstructions(t *testing.T) {
 		"🤖 **For Agent**",
 		"请使用 OpenGrove Handoff 读取：`opengrove-handoff:abcdefghijklmnopqrstuv`",
 		"[查看安装方法](https://github.com/open-grove/handoff)",
-		"有效期：" + expiresAt.Format(time.RFC3339),
 	} {
 		if !strings.Contains(message, expected) {
 			t.Fatalf("share message missing %q:\n%s", expected, message)
@@ -306,14 +304,22 @@ func TestResolveCreateSelectionUsesPreferredVocabulary(t *testing.T) {
 }
 
 func TestRuntimeOnlyAppliesToAgentGenerator(t *testing.T) {
-	for _, generator := range []string{"preserve", "cloud"} {
-		_, err := resolveCreateSelection(createSelectionInput{
-			Source: "auto", Generator: generator, Runtime: "opencode",
-			Set: map[string]bool{"generator": true, "runtime": true},
-		})
-		if err == nil || !strings.Contains(err.Error(), "only selects the local sidecar") {
-			t.Fatalf("%s generator accepted an unrelated runtime: %v", generator, err)
-		}
+	_, err := resolveCreateSelection(createSelectionInput{
+		Source: "auto", Generator: "preserve", Runtime: "opencode",
+		Set: map[string]bool{"generator": true, "runtime": true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "only selects the local sidecar") {
+		t.Fatalf("preserve generator accepted an unrelated runtime: %v", err)
+	}
+}
+
+func TestCloudGeneratorIsRemoved(t *testing.T) {
+	_, err := resolveCreateSelection(createSelectionInput{
+		Source: "auto", Generator: "cloud", Runtime: "auto",
+		Set: map[string]bool{"generator": true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "--generator must be agent or preserve") {
+		t.Fatalf("removed cloud generator was accepted: %v", err)
 	}
 }
 
@@ -327,21 +333,13 @@ func TestDeterministicGeneratorIsInternalOnly(t *testing.T) {
 	}
 }
 
-func TestLegacyNoCompactionMapsToPreserve(t *testing.T) {
-	for flagName, input := range map[string]createSelectionInput{
-		"mode": {
-			Source: "auto", Generator: "agent", Runtime: "auto", LegacyMode: "local",
-			Set: map[string]bool{"mode": true},
-		},
-		"compact": {
-			Source: "auto", Generator: "agent", Runtime: "auto", LegacyCompact: "none",
-			Set: map[string]bool{"compact": true},
-		},
-	} {
-		selection, err := resolveCreateSelection(input)
-		if err != nil || selection.Generator != "preserve" {
-			t.Fatalf("legacy --%s did not map to preserve: %#v, %v", flagName, selection, err)
-		}
+func TestLegacyLocalModeMapsToPreserve(t *testing.T) {
+	selection, err := resolveCreateSelection(createSelectionInput{
+		Source: "auto", Generator: "agent", Runtime: "auto", LegacyMode: "local",
+		Set: map[string]bool{"mode": true},
+	})
+	if err != nil || selection.Generator != "preserve" {
+		t.Fatalf("legacy --mode local did not map to preserve: %#v, %v", selection, err)
 	}
 }
 
@@ -460,13 +458,13 @@ func TestResolveCreateSelectionAcceptsOpenCode(t *testing.T) {
 func TestResolveCreateSelectionMapsLegacyVocabulary(t *testing.T) {
 	selection, err := resolveCreateSelection(createSelectionInput{
 		Source: "auto", Generator: "agent", Runtime: "auto",
-		LegacyFrom: "pi", LegacyMode: "server", LegacyAgent: "codex", LegacyIncludeTranscript: true,
+		LegacyFrom: "pi", LegacyMode: "agent", LegacyAgent: "codex",
 		Set: map[string]bool{"from": true, "mode": true, "agent": true},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.Source != "pi" || selection.Generator != "cloud" || selection.Runtime != "codex" || selection.UploadContext != "selected" || len(selection.Deprecated) < 4 {
+	if selection.Source != "pi" || selection.Generator != "agent" || selection.Runtime != "codex" || len(selection.Deprecated) != 3 {
 		t.Fatalf("unexpected compatibility selection: %#v", selection)
 	}
 }
@@ -485,10 +483,9 @@ func TestResolveCreateSelectionRejectsConflicts(t *testing.T) {
 func TestFormatShareMessageUsesCompactTitle(t *testing.T) {
 	result := types.CreateResponse{
 		Handoff: types.Handoff{
-			ID:        "abcdefghijklmnopqrstuv",
-			Title:     "继续完成编辑部 0.1.12 发布",
-			Goal:      "继续完成编辑部 0.1.12 发布：核实并安全修复所有权限问题",
-			ExpiresAt: time.Now().Add(time.Hour),
+			ID:    "abcdefghijklmnopqrstuv",
+			Title: "继续完成编辑部 0.1.12 发布",
+			Goal:  "继续完成编辑部 0.1.12 发布：核实并安全修复所有权限问题",
 		},
 		ShareURL: "https://handoff.openmau.com/h/abcdefghijklmnopqrstuv",
 	}
@@ -501,29 +498,6 @@ func TestFormatShareMessageUsesCompactTitle(t *testing.T) {
 func TestMarkdownLinkLabelFallback(t *testing.T) {
 	if label := markdownLinkLabel(" \n\t"); label != "Handoff 交接" {
 		t.Fatalf("fallback label = %q", label)
-	}
-}
-
-func TestResolveCreateMode(t *testing.T) {
-	for _, test := range []struct {
-		mode, compact       string
-		modeSet, compactSet bool
-		want                string
-	}{
-		{mode: "agent", want: "agent"},
-		{mode: "local", modeSet: true, want: "local"},
-		{mode: "session", modeSet: true, want: "session"},
-		{mode: "agent", compact: "current", compactSet: true, want: "agent"},
-		{mode: "agent", compact: "none", compactSet: true, want: "local"},
-		{mode: "agent", compact: "server", compactSet: true, want: "server"},
-	} {
-		got, err := resolveCreateMode(test.mode, test.compact, test.modeSet, test.compactSet)
-		if err != nil || got != test.want {
-			t.Fatalf("resolveCreateMode(%q, %q) = %q, %v; want %q", test.mode, test.compact, got, err, test.want)
-		}
-	}
-	if _, err := resolveCreateMode("local", "server", true, true); err == nil {
-		t.Fatal("expected conflicting mode flags to fail")
 	}
 }
 
@@ -569,7 +543,7 @@ func TestFormatAttachedContextDistinguishesPortableContextFromRawSession(t *test
 func TestCreateJSONIncludesCanonicalShareMessage(t *testing.T) {
 	result := types.CreateResponse{
 		Handoff: types.Handoff{
-			ID: "abcdefghijklmnopqrstuv", Goal: "continue", ExpiresAt: time.Now().Add(time.Hour),
+			ID: "abcdefghijklmnopqrstuv", Goal: "continue",
 		},
 		ShareURL: "https://handoff.openmau.com/h/abcdefghijklmnopqrstuv",
 	}
@@ -596,20 +570,6 @@ func TestReadStdinContextRejectsOversizedInput(t *testing.T) {
 	}
 }
 
-func TestServerGenerationMustFailClosed(t *testing.T) {
-	for _, preview := range []types.CompactPreviewResponse{
-		{Generator: "deterministic", Warning: "Agent Plan timed out"},
-		{Generator: "deterministic"},
-	} {
-		if err := validateServerPreview(preview); err == nil {
-			t.Fatalf("accepted failed server preview: %#v", preview)
-		}
-	}
-	if err := validateServerPreview(types.CompactPreviewResponse{Generator: "server:agent-plan"}); err != nil {
-		t.Fatalf("rejected valid server preview: %v", err)
-	}
-}
-
 func TestReviewSectionsAcceptsUnchangedDraft(t *testing.T) {
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", "true")
@@ -617,7 +577,7 @@ func TestReviewSectionsAcceptsUnchangedDraft(t *testing.T) {
 		HumanBackground: "Background", HumanStatus: "Ready", HumanTodos: []string{"Continue"},
 		Context: "Known", CurrentState: "Ready", NextSteps: []string{"Continue"},
 	}
-	output, err := reviewSections(context.Background(), "continue", types.Context{Source: "stdin"}, input, "deterministic", time.Hour)
+	output, err := reviewSections(context.Background(), "continue", types.Context{Source: "stdin"}, input, "deterministic")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,7 +590,7 @@ func TestSchemaContracts(t *testing.T) {
 	for _, command := range []string{
 		"create", "session.locate", "receive", "context", "delete",
 		"admin.login", "admin.status", "admin.logout",
-		"config.show", "config.set-server", "doctor", "whoami", "update",
+		"config.show", "config.set-server", "doctor", "update",
 		"skills.list", "skills.read", "skills.install", "version",
 		"auth", "config", "skills",
 	} {
@@ -651,7 +611,7 @@ func TestSchemaContracts(t *testing.T) {
 	}
 	createProperties := create["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	generatorEnum := createProperties["generator"].(map[string]any)["enum"].([]string)
-	if !strings.Contains(strings.Join(generatorEnum, ","), "preserve") || strings.Contains(strings.Join(generatorEnum, ","), "deterministic") {
+	if !strings.Contains(strings.Join(generatorEnum, ","), "preserve") || strings.Contains(strings.Join(generatorEnum, ","), "deterministic") || strings.Contains(strings.Join(generatorEnum, ","), "cloud") {
 		t.Fatalf("create schema generator boundary is wrong: %#v", generatorEnum)
 	}
 	for _, property := range []string{"source", "runtime"} {
@@ -693,18 +653,17 @@ func TestEmbeddedHandoffSkill(t *testing.T) {
 		!strings.Contains(content, "Return `share_message` exactly") ||
 		!strings.Contains(content, "Ask the smallest context-specific clarification") ||
 		!strings.Contains(content, "Do not turn this into a fixed questionnaire") ||
-		!strings.Contains(content, "--generator cloud") ||
 		!strings.Contains(content, "--attach-context") ||
 		!strings.Contains(content, "--source codex|claude|pi|opencode") ||
 		!strings.Contains(content, "Keep these controls separate") ||
 		!strings.Contains(content, "It never chooses the input source or model") ||
 		!strings.Contains(content, "Keep the user interaction smaller than the CLI surface") ||
-		!strings.Contains(content, "Use cloud generation only when the user explicitly requests it") ||
 		!strings.Contains(content, "Add `--attach-context` only when the user explicitly asks") ||
 		!strings.Contains(content, "automatically perform a cached update preflight") ||
 		!strings.Contains(content, "HANDOFF_NO_AUTO_UPDATE=1") ||
 		!strings.Contains(content, "handoff context <reference>") ||
 		!strings.Contains(content, "handoff session locate") ||
+		strings.Contains(content, "--generator cloud") ||
 		strings.Contains(content, "--upload-context selected") ||
 		strings.Contains(content, "--mode server") {
 		t.Fatalf("embedded skill is incomplete: ok=%v content=%q", ok, content)
@@ -733,12 +692,12 @@ func TestDeleteRequiresStructuredConfirmation(t *testing.T) {
 }
 
 func TestGlobalOutputFormatCanAppearBeforeOrAfterCommand(t *testing.T) {
-	if _, format, err := extractOutputFormat([]string{"whoami"}); err != nil || format != "text" {
+	if _, format, err := extractOutputFormat([]string{"version"}); err != nil || format != "text" {
 		t.Fatalf("default output format = %q, %v; want text", format, err)
 	}
 	for _, input := range [][]string{
-		{"--json", "whoami"},
-		{"whoami", "--json"},
+		{"--json", "version"},
+		{"version", "--json"},
 		{"receive", "abcdefghijklmnopqrstuv", "--format=json"},
 	} {
 		cleaned, format, err := extractOutputFormat(input)

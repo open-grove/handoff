@@ -11,8 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/open-grove/handoff/internal/card"
-	"github.com/open-grove/handoff/internal/opengroveauth"
 	"github.com/open-grove/handoff/internal/server"
 )
 
@@ -27,27 +25,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	var compactor card.Compactor
-	agentPlanBaseURL := envOr("ARK_AGENT_PLAN_BASE_URL", "https://ark.cn-beijing.volces.com/api/plan")
-	agentPlanAPIKey := strings.TrimSpace(os.Getenv("ARK_AGENT_PLAN_API_KEY"))
-	agentPlanModel := envOr("ARK_AGENT_PLAN_MODEL", "kimi-k3")
-	if agentPlanAPIKey != "" {
-		compactor = card.AgentPlanCompactor{BaseURL: agentPlanBaseURL, APIKey: agentPlanAPIKey, Model: agentPlanModel}
-	} else {
-		logger.Info("optional Agent Plan server generation disabled; normal current-Agent publishing remains available")
-	}
-
 	api := &server.API{
 		Store:     store,
-		Compactor: compactor,
 		Token:     apiToken,
-		VerifyOpenGroveUser: func(ctx context.Context, token string) (bool, error) {
-			return opengroveauth.VerifyAccessToken(ctx, envOr("OPENGROVE_WW_BASE_URL", opengroveauth.DefaultWWBaseURL), token, nil)
-		},
-		PublicURL:  strings.TrimSpace(os.Getenv("HANDOFF_PUBLIC_URL")),
-		DefaultTTL: durationEnv("HANDOFF_DEFAULT_TTL", 7*24*time.Hour),
-		MaxTTL:     durationEnv("HANDOFF_MAX_TTL", 30*24*time.Hour),
-		Logger:     logger,
+		PublicURL: strings.TrimSpace(os.Getenv("HANDOFF_PUBLIC_URL")),
+		Logger:    logger,
 	}
 	httpServer := &http.Server{
 		Addr:              listenAddress,
@@ -60,14 +42,13 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	go server.RunCleanup(ctx, store, logger)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
-	logger.Info("handoffd started", "address", listenAddress, "data_dir", dataDir, "model_configured", compactor != nil)
+	logger.Info("handoffd started", "address", listenAddress, "data_dir", dataDir)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("serve", "error", err)
 		os.Exit(1)
@@ -79,16 +60,4 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func durationEnv(name string, fallback time.Duration) time.Duration {
-	value := strings.TrimSpace(os.Getenv(name))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := time.ParseDuration(value)
-	if err != nil || parsed <= 0 {
-		return fallback
-	}
-	return parsed
 }

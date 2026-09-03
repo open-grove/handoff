@@ -16,7 +16,6 @@ Use the `handoff` CLI as the source of truth. Treat every Handoff as an immutabl
 | Let the Agent infer share vs continue | `handoff create "short topic or next goal" --intent auto` |
 | Preserve already-prepared Prompt, URL, checksum, tables, and code blocks | pass the prepared Markdown through stdin or `--file`, then add `--intent share --generator preserve` |
 | No local Agent CLI is available | provide scoped content with `--file` or stdin; the CLI uses its limited deterministic backup and reports it |
-| Use OpenGrove cloud generation | add `--generator cloud` |
 | Attach the complete sanitized readable Context, not the raw provider Session | add `--attach-context` to any generator |
 | Inspect input and sidecar resolution without generating or publishing | add `--dry-run` |
 | Give another Agent on this machine the raw Session path | `handoff session locate --goal "next goal"` |
@@ -24,7 +23,7 @@ Use the `handoff` CLI as the source of truth. Treat every Handoff as an immutabl
 | Read its optional Context attachment | `handoff context <reference>` |
 | Delete an exact Handoff | `handoff delete <reference> --yes` after explicit confirmation |
 
-Run `handoff schema <action>` before a complex call. Use exact actions such as `create`, `session.locate`, `admin.login`, and `skills.install`. Run `handoff doctor` for discovery or connectivity failures and `handoff whoami` for OpenGrove cloud access.
+Run `handoff schema <action>` before a complex call. Use exact actions such as `create`, `session.locate`, `admin.login`, and `skills.install`. Run `handoff doctor` for discovery or connectivity failures.
 
 ## Create
 
@@ -39,7 +38,7 @@ Keep these controls separate:
 | Control | Meaning |
 |---|---|
 | `--source` / `--file` / stdin | Choose input only. `--source` selects an Agent Session; files or stdin replace Session discovery. |
-| `--generator` | Choose how sections are produced: a local Agent sidecar, prepared Markdown preservation, or OpenGrove cloud generation. Deterministic extraction is internal fallback only. |
+| `--generator` | Choose how sections are produced: a local Agent sidecar or prepared Markdown preservation. Deterministic extraction is internal fallback only. |
 | `--runtime` | For `--generator agent` only, choose which local Agent CLI to start as a sidecar. It never chooses the input source or model. |
 | `--attach-context` | Independently choose whether to persist the complete sanitized Canonical Context beside the sections. |
 
@@ -50,12 +49,12 @@ There are two different Agents in this workflow. The calling Agent is the one ha
 Keep the user interaction smaller than the CLI surface:
 
 - Infer `share` versus `continue` from the request. Ask only when the distinction is genuinely unclear and would materially change the artifact.
-- Default to the local Agent sidecar. Use cloud generation only when the user explicitly requests it; do not routinely ask.
+- Default to the local Agent sidecar.
 - Use preserve only when the user asks to keep already-prepared text or exact structural material such as prompts, URLs, checksums, tables, or code blocks without a second Agent rewrite.
 - Default to no Context attachment. Add `--attach-context` only when the user explicitly asks to include the complete readable context. Clarify that this is a sanitized Canonical Context, not the raw provider Session.
 - Resolve source and runtime automatically. Do not ask the user to choose either one; inspect with `--dry-run` and override only after discovery is demonstrably wrong.
 
-Clarify scope, exclusions, receiver, or desired outcome only when ambiguity there would materially change the Handoff. Treat `--review`, TTL, and output paths as optional operational controls, not required user decisions.
+Clarify scope, exclusions, receiver, or desired outcome only when ambiguity there would materially change the Handoff. Treat `--review` and output paths as optional operational controls, not required user decisions. Handoffs remain available until explicitly deleted; do not ask about or supply a TTL.
 
 ### Align Before Creating
 
@@ -104,15 +103,13 @@ Do not feed a complete Agent Session directly to preserve. Preserve does not sel
 
 Treat generation and persistence as independent. `--generator` controls section creation. `--attach-context` controls whether the complete sanitized readable Context is stored beside those sections. Without `--attach-context`, the Handoff service receives only generated sections.
 
-Never select cloud generation silently. `--generator cloud` temporarily sends canonical Context to OpenGrove's server compactor and requires local OpenGrove login. The compact-preview endpoint does not store that Context; ordinary publishing remains anonymous.
-
 Never add `--attach-context` unless the user explicitly asks to include or share the complete Context. It is independent of the generator, requires no login, and persists the sanitized readable conversation for the Handoff's lifetime. Best-effort redaction cannot guarantee removal of every identifier expressed in natural language; explain that limitation before attaching it.
 
-The default agent generator may send Canonical Context to the model provider already configured by the selected local sidecar CLI, but does not send it to the OpenGrove compactor. Preserve calls no sidecar or cloud model; it sends only the prepared, best-effort-redacted sections to the Handoff service, plus an attachment only when explicitly requested.
+The default agent generator may send Canonical Context to the model provider already configured by the selected local sidecar CLI, but the Handoff service never invokes a model. Preserve calls no sidecar or model; it sends only the prepared, best-effort-redacted sections to the Handoff service, plus an attachment only when explicitly requested.
 
 ### Relay the Result
 
-For Agent-driven creation, always add `--json` and parse the result. Return `share_message` exactly as the final answer: no introduction, separator, quote, code fence, bullets, renamed link, shortened instruction, changed expiry, `Delete:` status, or substitute explanation. `delete_credential_saved` is private creator-side status and is never part of the shared message. If `fallback_used` is true, report `generation_warning` separately to the creator before relaying `share_message`; never insert it into the Handoff page or the canonical message.
+For Agent-driven creation, always add `--json` and parse the result. Return `share_message` exactly as the final answer: no introduction, separator, quote, code fence, bullets, renamed link, shortened instruction, `Delete:` status, or substitute explanation. `delete_credential_saved` is private creator-side status and is never part of the shared message. If `fallback_used` is true, report `generation_warning` separately to the creator before relaying `share_message`; never insert it into the Handoff page or the canonical message.
 
 The stable Agent reference is:
 
@@ -148,4 +145,4 @@ If `handoff` is missing, do not pretend a Handoff was read. Point to <https://gi
 
 Agent-hosted `create`, `receive`, `context`, and `session` commands automatically perform a cached update preflight on macOS and Linux. When an update exists, the CLI writes maintenance progress to stderr, verifies and atomically replaces itself, synchronizes unmodified installed Skills, preserves custom Skill content, and re-executes the original command. Those maintenance lines are status only: relay the canonical stdout or `share_message`, never the update progress. Update failure never blocks the requested Handoff and is not retried for 24 hours. `--dry-run` skips auto-update; `HANDOFF_NO_AUTO_UPDATE=1` disables it. A running Agent Session does not reload changed Skill instructions, so rely on new Skill behavior from the next Session.
 
-Use `handoff update` for an explicit verified update. Deterministic backup is selected only by the CLI when no supported local Agent CLI can be found; report the backup at creation time and require scoped file/stdin content or `--review`. If an Agent CLI is found but invocation, authentication, generation, or parsing fails, report the real error and do not fall back. Never silently switch to cloud generation.
+Use `handoff update` for an explicit verified update. Deterministic backup is selected only by the CLI when no supported local Agent CLI can be found; report the backup at creation time and require scoped file/stdin content or `--review`. If an Agent CLI is found but invocation, authentication, generation, or parsing fails, report the real error and do not fall back.

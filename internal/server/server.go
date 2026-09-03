@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -39,14 +38,10 @@ type storedHandoff struct {
 }
 
 type API struct {
-	Store               *Store
-	Compactor           card.Compactor
-	Token               string
-	VerifyOpenGroveUser func(context.Context, string) (bool, error)
-	PublicURL           string
-	DefaultTTL          time.Duration
-	MaxTTL              time.Duration
-	Logger              *slog.Logger
+	Store     *Store
+	Token     string
+	PublicURL string
+	Logger    *slog.Logger
 }
 
 func NewStore(dir string) (*Store, error) {
@@ -114,12 +109,7 @@ func (store *Store) Get(id string) (types.Handoff, error) {
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return types.Handoff{}, err
 	}
-	handoff := stored.Handoff
-	if time.Now().After(handoff.ExpiresAt) {
-		_ = store.Delete(id)
-		return types.Handoff{}, os.ErrNotExist
-	}
-	return handoff, nil
+	return stored.Handoff, nil
 }
 
 func (store *Store) GetContext(id string) (types.ContextAttachment, error) {
@@ -135,10 +125,6 @@ func (store *Store) GetContext(id string) (types.ContextAttachment, error) {
 	var stored storedHandoff
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return types.ContextAttachment{}, err
-	}
-	if time.Now().After(stored.ExpiresAt) {
-		_ = store.Delete(id)
-		return types.ContextAttachment{}, os.ErrNotExist
 	}
 	if stored.Context == nil {
 		return types.ContextAttachment{}, os.ErrNotExist
@@ -183,34 +169,13 @@ func (store *Store) DeleteOwned(id, token string) (bool, error) {
 	return true, nil
 }
 
-func (store *Store) Cleanup() int {
-	entries, err := os.ReadDir(store.dir)
-	if err != nil {
-		return 0
-	}
-	removed := 0
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		id := strings.TrimSuffix(entry.Name(), ".json")
-		if _, err := store.Get(id); errors.Is(err, os.ErrNotExist) {
-			removed++
-		}
-	}
-	return removed
-}
-
 func (store *Store) path(id string) string { return filepath.Join(store.dir, id+".json") }
 
 func (api *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("GET /v1/schema/create", api.createSchema)
-	mux.HandleFunc("GET /v1/schema/compact", api.compactSchema)
 	mux.HandleFunc("POST /v1/handoffs", api.publish)
-	mux.HandleFunc("POST /v1/handoffs/compact", api.compact)
-	mux.HandleFunc("POST /v1/handoffs/compact-preview", api.compactPreview)
 	mux.HandleFunc("GET /v1/handoffs/{id}/context", api.getContext)
 	mux.HandleFunc("GET /v1/handoffs/{id}", api.get)
 	mux.HandleFunc("DELETE /v1/handoffs/{id}", api.delete)
@@ -220,10 +185,9 @@ func (api *API) Handler() http.Handler {
 
 func (api *API) health(response http.ResponseWriter, _ *http.Request) {
 	writeJSON(response, http.StatusOK, map[string]any{
-		"ok":               true,
-		"service":          "handoffd",
-		"version":          types.ProtocolVersion,
-		"model_configured": api.Compactor != nil,
+		"ok":      true,
+		"service": "handoffd",
+		"version": types.ProtocolVersion,
 	})
 }
 
@@ -234,22 +198,9 @@ func (api *API) createSchema(response http.ResponseWriter, _ *http.Request) {
 		"risk":     "write",
 		"auth":     "none",
 		"required": []string{"goal", "source.kind", "sections", "generator"},
-		"optional": []string{"sections.intent", "context_attachment"},
+		"optional": []string{"sections.intent", "context_attachment", "ttl_seconds (deprecated and ignored)"},
 		"privacy":  "publishing is anonymous; context_attachment is persisted only when explicitly supplied and is re-sanitized by the service",
-		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
-	})
-}
-
-func (api *API) compactSchema(response http.ResponseWriter, _ *http.Request) {
-	writeJSON(response, http.StatusOK, map[string]any{
-		"method":   "POST",
-		"path":     "/v1/handoffs/compact-preview",
-		"risk":     "write",
-		"auth":     "OpenGrove access token",
-		"required": []string{"goal", "context.source", "context.summary or context.messages"},
-		"optional": []string{"intent: auto|share|continue"},
-		"privacy":  "cloud generation temporarily processes canonical sanitized readable context; it is not stored by this endpoint",
-		"limits":   map[string]any{"body_bytes": maxBodyBytes, "max_ttl_seconds": int64(api.maxTTL().Seconds())},
+		"limits":   map[string]any{"body_bytes": maxBodyBytes},
 	})
 }
 
@@ -266,18 +217,13 @@ func (api *API) publish(response http.ResponseWriter, request *http.Request) {
 		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "invalid request: " + err.Error()})
 		return
 	}
-	ttl, err := api.resolveTTL(input.TTLSeconds)
-	if err != nil {
-		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: err.Error()})
-		return
-	}
 	id, err := randomID()
 	if err != nil {
 		writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not allocate handoff"})
 		return
 	}
 	now := time.Now().UTC()
-	handoff, err := card.BuildFromSections(id, input.Goal, input.Source, input.Sections, input.Generator, now, now.Add(ttl))
+	handoff, err := card.BuildFromSections(id, input.Goal, input.Source, input.Sections, input.Generator, now)
 	if err != nil {
 		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: err.Error()})
 		return
@@ -294,87 +240,6 @@ func (api *API) publish(response http.ResponseWriter, request *http.Request) {
 		handoff.Markdown = card.Render(handoff, input.Sections)
 	}
 	api.saveCreated(response, handoff, contextAttachment)
-}
-
-func (api *API) compact(response http.ResponseWriter, request *http.Request) {
-	if !api.requireOpenGroveUser(response, request) {
-		return
-	}
-	request.Body = http.MaxBytesReader(response, request.Body, maxBodyBytes)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
-	var input types.CompactRequest
-	if err := decoder.Decode(&input); err != nil {
-		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "invalid request: " + err.Error()})
-		return
-	}
-	if err := requireEOF(decoder); err != nil {
-		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "invalid request: " + err.Error()})
-		return
-	}
-	input.Goal = card.SanitizeGoal(input.Goal)
-	input.Intent = card.SanitizeIntent(input.Intent)
-	input.Context = card.SanitizeContext(input.Context)
-	if input.Intent == "" || input.Goal == "" || input.Context.Source == "" || !hasContext(input.Context) {
-		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "goal, context.source, and context summary or messages are required"})
-		return
-	}
-	ttl, err := api.resolveTTL(input.TTLSeconds)
-	if err != nil {
-		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: err.Error()})
-		return
-	}
-	id, err := randomID()
-	if err != nil {
-		writeJSON(response, http.StatusInternalServerError, types.ErrorResponse{Error: "could not allocate handoff"})
-		return
-	}
-	now := time.Now().UTC()
-	handoff, compactError := card.Build(request.Context(), api.Compactor, id, input.Intent, input.Goal, input.Context, now, now.Add(ttl))
-	if compactError != nil {
-		api.logger().Warn("model generation unavailable; using deterministic handoff", "error", compactError)
-	}
-	api.saveCreated(response, handoff, nil)
-}
-
-func (api *API) compactPreview(response http.ResponseWriter, request *http.Request) {
-	if !api.requireOpenGroveUser(response, request) {
-		return
-	}
-	request.Body = http.MaxBytesReader(response, request.Body, maxBodyBytes)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
-	var input types.CompactRequest
-	if err := decoder.Decode(&input); err != nil {
-		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "invalid request: " + err.Error()})
-		return
-	}
-	if err := requireEOF(decoder); err != nil {
-		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "invalid request: " + err.Error()})
-		return
-	}
-	input.Goal = card.SanitizeGoal(input.Goal)
-	input.Intent = card.SanitizeIntent(input.Intent)
-	input.Context = card.SanitizeContext(input.Context)
-	if input.Intent == "" || input.Goal == "" || input.Context.Source == "" || !hasContext(input.Context) {
-		writeJSON(response, http.StatusBadRequest, types.ErrorResponse{Error: "goal, context.source, and context summary or messages are required"})
-		return
-	}
-	sections, generator, compactError := card.GenerateSections(request.Context(), api.Compactor, input.Intent, input.Goal, input.Context)
-	warning := ""
-	if api.Compactor == nil {
-		warning = "server compactor is not configured; deterministic sections were used"
-	} else if compactError != nil {
-		warning = card.Redact(compactError.Error())
-		api.logger().Warn("preview model generation unavailable; using deterministic handoff", "error", compactError)
-	}
-	writeJSON(response, http.StatusOK, types.CompactPreviewResponse{
-		Sections: sections, Generator: generator, Warning: warning,
-	})
-}
-
-func hasContext(input types.Context) bool {
-	return strings.TrimSpace(input.Summary) != "" || len(input.Messages) > 0
 }
 
 func (api *API) saveCreated(response http.ResponseWriter, handoff types.Handoff, contextAttachment *types.ContextAttachment) {
@@ -398,7 +263,7 @@ func (api *API) getContext(response http.ResponseWriter, request *http.Request) 
 	id := request.PathValue("id")
 	contextAttachment, err := api.Store.GetContext(id)
 	if err != nil {
-		writeJSON(response, http.StatusNotFound, types.ErrorResponse{Error: "attached context not found or expired"})
+		writeJSON(response, http.StatusNotFound, types.ErrorResponse{Error: "attached context not found"})
 		return
 	}
 	writeJSON(response, http.StatusOK, types.ContextResponse{HandoffID: id, Context: contextAttachment})
@@ -407,7 +272,7 @@ func (api *API) getContext(response http.ResponseWriter, request *http.Request) 
 func (api *API) get(response http.ResponseWriter, request *http.Request) {
 	handoff, err := api.Store.Get(request.PathValue("id"))
 	if err != nil {
-		writeJSON(response, http.StatusNotFound, types.ErrorResponse{Error: "handoff not found or expired"})
+		writeJSON(response, http.StatusNotFound, types.ErrorResponse{Error: "handoff not found"})
 		return
 	}
 	writeJSON(response, http.StatusOK, api.createResponse(handoff))
@@ -455,29 +320,6 @@ func (api *API) page(response http.ResponseWriter, request *http.Request) {
 	_, _ = io.WriteString(response, card.HTML(handoff))
 }
 
-func (api *API) requireOpenGroveUser(response http.ResponseWriter, request *http.Request) bool {
-	token := bearerToken(request)
-	if token == "" {
-		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "OpenGrove login required"})
-		return false
-	}
-	if api.VerifyOpenGroveUser == nil {
-		writeJSON(response, http.StatusServiceUnavailable, types.ErrorResponse{Error: "OpenGrove authentication is unavailable"})
-		return false
-	}
-	ok, err := api.VerifyOpenGroveUser(request.Context(), token)
-	if err != nil {
-		api.logger().Warn("verify OpenGrove user", "error", err)
-		writeJSON(response, http.StatusServiceUnavailable, types.ErrorResponse{Error: "OpenGrove authentication is temporarily unavailable"})
-		return false
-	}
-	if !ok {
-		writeJSON(response, http.StatusUnauthorized, types.ErrorResponse{Error: "OpenGrove login required"})
-		return false
-	}
-	return true
-}
-
 func (api *API) authorizedAdmin(request *http.Request) bool {
 	if api.Token == "" {
 		return false
@@ -516,31 +358,6 @@ func (api *API) createResponse(handoff types.Handoff) types.CreateResponse {
 	}
 }
 
-func (api *API) defaultTTL() time.Duration {
-	if api.DefaultTTL > 0 {
-		return api.DefaultTTL
-	}
-	return 7 * 24 * time.Hour
-}
-
-func (api *API) maxTTL() time.Duration {
-	if api.MaxTTL > 0 {
-		return api.MaxTTL
-	}
-	return 30 * 24 * time.Hour
-}
-
-func (api *API) resolveTTL(seconds int64) (time.Duration, error) {
-	ttl := api.defaultTTL()
-	if seconds > 0 {
-		ttl = time.Duration(seconds) * time.Second
-	}
-	if ttl < 5*time.Minute || ttl > api.maxTTL() {
-		return 0, fmt.Errorf("ttl must be between 5m and %s", api.maxTTL())
-	}
-	return ttl, nil
-}
-
 func (api *API) logger() *slog.Logger {
 	if api.Logger != nil {
 		return api.Logger
@@ -557,9 +374,6 @@ func (api *API) logRequests(next http.Handler) http.Handler {
 }
 
 func safeLogPath(path string) string {
-	if path == "/v1/handoffs/compact" || path == "/v1/handoffs/compact-preview" {
-		return path
-	}
 	if strings.HasPrefix(path, "/v1/handoffs/") {
 		return "/v1/handoffs/:id"
 	}
@@ -616,19 +430,4 @@ func requireEOF(decoder *json.Decoder) error {
 		return err
 	}
 	return nil
-}
-
-func RunCleanup(ctx context.Context, store *Store, logger *slog.Logger) {
-	ticker := time.NewTicker(time.Hour)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if removed := store.Cleanup(); removed > 0 {
-				logger.Info("expired handoffs removed", "count", removed)
-			}
-		}
-	}
 }
