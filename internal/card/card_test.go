@@ -598,6 +598,17 @@ func TestHTMLRendersMarkdownWithoutRawHTML(t *testing.T) {
 	}
 }
 
+func TestHTMLUsesCanonicalAgentReference(t *testing.T) {
+	page := HTML(types.Handoff{
+		ID:       "abcdefghijklmnopqrstuv",
+		Goal:     "Continue safely",
+		Markdown: "# Handoff\n\n## For Human\n\n### Summary\n\nReady.\n\n## For Agent\n\n### Context\n\nTechnical.",
+	})
+	if !strings.Contains(page, `<code>handoff:abcdefghijklmnopqrstuv</code>`) || strings.Contains(page, `<code>opengrove-handoff:abcdefghijklmnopqrstuv</code>`) {
+		t.Fatalf("Agent reference is wrong: %s", page)
+	}
+}
+
 func TestHTMLRendersInlineAndDisplayMathWithoutTouchingCode(t *testing.T) {
 	page := HTML(types.Handoff{
 		ID:   "abcdefghijklmnopqrstuv",

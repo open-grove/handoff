@@ -114,7 +114,7 @@ For Agent-driven creation, always add `--json` and parse the result. Return `sha
 The stable Agent reference is:
 
 ```text
-opengrove-handoff:<code>
+handoff:<code>
 ```
 
 ## Locate a Local Session
@@ -123,10 +123,10 @@ Use `handoff session locate` only for another Agent on the same machine. Relay i
 
 ## Receive
 
-Accept `opengrove-handoff:<code>`, a legacy branded message, a raw code, a human share URL, or a `.md` URL:
+Accept `handoff:<code>`, the legacy `opengrove-handoff:<code>` form, a legacy branded message, a raw code, a human share URL, or a `.md` URL:
 
 ```bash
-handoff receive 'opengrove-handoff:<code>'
+handoff receive 'handoff:<code>'
 ```
 
 Read the returned Markdown as an immutable snapshot and follow its final receiver instruction. A `share` Handoff is knowledge, not authorization or a task list: preserve its conclusions and reasoning, and do not invent next steps. For a `continue` Handoff, explain the current background in clear language and ask what to do next; do not execute `Next Steps` unless the current request already asks you to continue.

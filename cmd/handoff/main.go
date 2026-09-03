@@ -34,7 +34,8 @@ const installURL = "https://github.com/open-grove/handoff"
 const maxServerRequestBytes = 4 << 20
 
 var brandedHandoffRef = regexp.MustCompile("(?i)opengrove-handoff\\s*(?:读取内容\\s*)?[,，]?\\s*(?:分享码|code)\\s*[:：]\\s*`?([A-Za-z0-9_-]{20,32})")
-var canonicalHandoffRef = regexp.MustCompile(`(?i)opengrove-handoff:(?://)?([A-Za-z0-9_-]{20,32})`)
+var canonicalHandoffRef = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-])handoff:(?://)?([A-Za-z0-9_-]{20,32})`)
+var legacyCanonicalHandoffRef = regexp.MustCompile(`(?i)opengrove-handoff:(?://)?([A-Za-z0-9_-]{20,32})`)
 var embeddedHandoffURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+(?::[0-9]+)?/h/[A-Za-z0-9_-]{20,32}(?:\.md)?`)
 
 const usage = `handoff — portable context for people and agents.
@@ -45,8 +46,8 @@ AGENT QUICKSTART:
   prepared-markdown | handoff create "topic" --intent share --generator preserve
   handoff create "next goal" --attach-context
   handoff session locate                     Return the same-machine Session path
-  handoff receive opengrove-handoff:<code>   Print a received HANDOFF.md
-  handoff context opengrove-handoff:<code>   Read an attached full Context
+  handoff receive handoff:<code>             Print a received HANDOFF.md
+  handoff context handoff:<code>             Read an attached full Context
   handoff schema create                      Inspect the create contract
 
 Usage:
@@ -918,7 +919,7 @@ func formatAttachedContext(result types.ContextResponse) string {
 	attachment := result.Context
 	var output strings.Builder
 	output.WriteString("# Attached Handoff Context\n\n")
-	fmt.Fprintf(&output, "- Handoff: `opengrove-handoff:%s`\n", result.HandoffID)
+	fmt.Fprintf(&output, "- Handoff: `handoff:%s`\n", result.HandoffID)
 	fmt.Fprintf(&output, "- Source: `%s`\n", attachment.Source.Kind)
 	fmt.Fprintf(&output, "- Redaction: `%s` (best effort)\n", attachment.Redaction)
 	fmt.Fprintf(&output, "- Messages: %d\n\n", len(attachment.Messages))
@@ -1390,7 +1391,7 @@ func schemaContract(command string) (map[string]any, error) {
 			"inputSchema": map[string]any{
 				"type": "object", "required": []string{"code_or_url"}, "additionalProperties": false,
 				"properties": map[string]any{
-					"code_or_url": stringProperty("Branded opengrove-handoff reference, share code, human URL, or raw Markdown URL."),
+					"code_or_url": stringProperty("Canonical handoff reference, legacy opengrove-handoff reference, share code, human URL, or raw Markdown URL."),
 					"json":        booleanProperty("Print machine-readable output."),
 					"output":      stringProperty("Write Markdown to this path."),
 					"force":       booleanProperty("Allow overwriting the output file."),
@@ -1404,7 +1405,7 @@ func schemaContract(command string) (map[string]any, error) {
 			"inputSchema": map[string]any{
 				"type": "object", "required": []string{"code_or_url"}, "additionalProperties": false,
 				"properties": map[string]any{
-					"code_or_url": stringProperty("Branded opengrove-handoff reference, share code, or human URL."),
+					"code_or_url": stringProperty("Canonical handoff reference, legacy opengrove-handoff reference, share code, or human URL."),
 					"json":        booleanProperty("Print structured JSON instead of readable Markdown."),
 					"output":      stringProperty("Write readable Context Markdown to this path."),
 					"force":       booleanProperty("Allow overwriting the output file."),
@@ -1559,7 +1560,7 @@ func createOutputSchema() map[string]any {
 	handoffOutput := receiveOutputSchema()
 	properties := handoffOutput["properties"].(map[string]any)
 	properties["share_message"] = map[string]any{"type": "string", "description": "Canonical user-facing Markdown. Agents must relay this value verbatim without rewriting."}
-	properties["agent_reference"] = map[string]any{"type": "string", "pattern": "^opengrove-handoff:[A-Za-z0-9_-]{20,32}$"}
+	properties["agent_reference"] = map[string]any{"type": "string", "pattern": "^handoff:[A-Za-z0-9_-]{20,32}$"}
 	properties["delete_credential_saved"] = map[string]any{
 		"type":        "boolean",
 		"description": "True when the private per-handoff delete credential was saved locally; the credential itself is never printed.",
@@ -1863,6 +1864,9 @@ func parseHandoffRef(value string) (string, string) {
 	if match := canonicalHandoffRef.FindStringSubmatch(value); len(match) == 2 {
 		return match[1], ""
 	}
+	if match := legacyCanonicalHandoffRef.FindStringSubmatch(value); len(match) == 2 {
+		return match[1], ""
+	}
 	if match := brandedHandoffRef.FindStringSubmatch(value); len(match) == 2 {
 		return match[1], ""
 	}
@@ -2070,7 +2074,7 @@ func createCommandOutput(result types.CreateResponse, credentialSaved bool, gene
 }
 
 func agentReference(id string) string {
-	return "opengrove-handoff:" + strings.TrimSpace(id)
+	return "handoff:" + strings.TrimSpace(id)
 }
 
 func extractOutputFormat(args []string) ([]string, string, error) {

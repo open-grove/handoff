@@ -106,6 +106,8 @@ test("publish, read, render, and delete a handoff", async () => {
   assert.match(page, /class="brand-mark"><svg viewBox="0 0 128 128"/);
   assert.match(page, /fill="#5FB24A"/);
   assert.match(page, /class="brand" href="https:\/\/github.com\/open-grove\/handoff"/);
+  assert.ok(page.includes(`<code>handoff:${created.handoff.id}</code>`));
+  assert.ok(!page.includes(`<code>opengrove-handoff:${created.handoff.id}</code>`));
   for (const shellChange of [`class="response-card"`, `class="appendix"`, `class="title-block"`, `class="intent"`, `class="top-title"`]) assert.ok(!page.includes(shellChange));
   for (const removed of ["READY TO CONTINUE", "有效期至", "Shared with OpenGrove", `class="brand-mark">OG`]) assert.ok(!page.includes(removed));
 
@@ -380,7 +382,7 @@ test("an attached Context is persisted explicitly and fetched separately", async
   assert.equal(created.handoff.context.available, true);
   assert.equal(created.handoff.context.message_count, 2);
   assert.match(created.handoff.markdown, /### Attached Context/);
-  assert.match(created.handoff.markdown, /handoff context opengrove-handoff:/);
+  assert.match(created.handoff.markdown, /handoff context handoff:/);
 
   const regular = await route(new Request(`https://handoff.example/v1/handoffs/${created.handoff.id}`), env);
   const regularText = await regular.text();

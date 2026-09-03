@@ -289,7 +289,7 @@ func render(handoff types.Handoff, sections Sections, reviewDraft bool) string {
 		renderContinueMarkdown(&output, handoff, sections)
 	}
 	if handoff.Context != nil && handoff.Context.Available {
-		fmt.Fprintf(&output, "### Attached Context\n\n完整的可读会话已在尽力脱敏后附带。需要核对细节时，请运行 `handoff context opengrove-handoff:%s` 按需读取；它不是原始 Provider Session。\n\n", handoff.ID)
+		fmt.Fprintf(&output, "### Attached Context\n\n完整的可读会话已在尽力脱敏后附带。需要核对细节时，请运行 `handoff context handoff:%s` 按需读取；它不是原始 Provider Session。\n\n", handoff.ID)
 	}
 	if sections.Intent == IntentShare {
 		output.WriteString("> 这是一份讨论成果分享。请准确保留它的结论与推理；除非用户明确要求，不要把其中的问题自动改写成待办事项。\n")
@@ -570,7 +570,7 @@ func htmlPage(handoff types.Handoff, documentMarkdown bool) string {
 			agentContent = renderMarkdownDocument(agentMarkdown)
 		}
 		content = `<section class="panel human-panel"><div class="panel-heading"><span class="audience-icon" aria-hidden="true">🖐️</span><div><span class="eyebrow">FOR HUMAN</span><h2>` + html.EscapeString(humanTitle) + `</h2></div></div><div class="human-content">` + humanContent + `</div></section>` +
-			`<details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>` + html.EscapeString(agentTitle) + `</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span>给 Agent 的指令</span><p>请使用 <strong>OpenGrove Handoff</strong> 读取：<code>opengrove-handoff:` + id + `</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a>` + contextLink + `</div><div class="prose agent-content">` + agentContent + `</div></div></details>`
+			`<details class="panel agent-panel"><summary><span class="summary-main"><span class="audience-icon" aria-hidden="true">🤖</span><span><span class="eyebrow">FOR AGENT</span><strong>` + html.EscapeString(agentTitle) + `</strong></span></span><span class="chevron" aria-hidden="true">›</span></summary><div class="agent-body"><div class="agent-instruction"><span>给 Agent 的指令</span><p>请使用 <strong>OpenGrove Handoff</strong> 读取：<code>handoff:` + id + `</code></p><a href="https://github.com/open-grove/handoff">查看安装方法 ↗</a>` + contextLink + `</div><div class="prose agent-content">` + agentContent + `</div></div></details>`
 	} else {
 		rendered := renderMarkdown(displayMarkdown)
 		if documentMarkdown {

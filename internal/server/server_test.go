@@ -176,7 +176,7 @@ func TestPublishAndFetchExplicitContextAttachment(t *testing.T) {
 	if created.Handoff.Context == nil || !created.Handoff.Context.Available || created.Handoff.Context.MessageCount != 2 {
 		t.Fatalf("missing attachment metadata: %#v", created.Handoff.Context)
 	}
-	if !strings.Contains(created.Handoff.Markdown, "### Attached Context") || !strings.Contains(created.Handoff.Markdown, "handoff context opengrove-handoff:") {
+	if !strings.Contains(created.Handoff.Markdown, "### Attached Context") || !strings.Contains(created.Handoff.Markdown, "handoff context handoff:") {
 		t.Fatalf("attachment instructions missing:\n%s", created.Handoff.Markdown)
 	}
 

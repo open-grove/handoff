@@ -249,9 +249,13 @@ func TestParseHandoffRef(t *testing.T) {
 	if parsedID != id || server != "" {
 		t.Fatalf("parsed Agent instruction (%q, %q)", parsedID, server)
 	}
-	parsedID, server = parseHandoffRef("请读取 `opengrove-handoff:" + id + "`")
+	parsedID, server = parseHandoffRef("请读取 `handoff:" + id + "`")
 	if parsedID != id || server != "" {
 		t.Fatalf("parsed stable Agent reference (%q, %q)", parsedID, server)
+	}
+	parsedID, server = parseHandoffRef("opengrove-handoff:" + id)
+	if parsedID != id || server != "" {
+		t.Fatalf("parsed legacy Agent reference (%q, %q)", parsedID, server)
 	}
 	parsedID, server = parseHandoffRef("https://handoff.example/h/" + id + ".md")
 	if parsedID != id || server != "https://handoff.example" {
@@ -281,7 +285,7 @@ func TestFormatShareMessageSeparatesHumanAndAgentInstructions(t *testing.T) {
 		"🖐️ **For Human**",
 		"你收到一份 Handoff，请打开[完成 \\[CLI\\] 部署](https://handoff.openmau.com/h/abcdefghijklmnopqrstuv)查看。",
 		"🤖 **For Agent**",
-		"请使用 OpenGrove Handoff 读取：`opengrove-handoff:abcdefghijklmnopqrstuv`",
+		"请使用 OpenGrove Handoff 读取：`handoff:abcdefghijklmnopqrstuv`",
 		"[查看安装方法](https://github.com/open-grove/handoff)",
 	} {
 		if !strings.Contains(message, expected) {
@@ -528,7 +532,7 @@ func TestFormatAttachedContextDistinguishesPortableContextFromRawSession(t *test
 		},
 	})
 	for _, expected := range []string{
-		"opengrove-handoff:abcdefghijklmnopqrstuv",
+		"handoff:abcdefghijklmnopqrstuv",
 		"Native Compact Summary (auxiliary)",
 		"### USER",
 		"continue",
@@ -551,7 +555,7 @@ func TestCreateJSONIncludesCanonicalShareMessage(t *testing.T) {
 	if output["share_message"] != formatShareMessage(result) {
 		t.Fatalf("share_message = %#v", output["share_message"])
 	}
-	if output["agent_reference"] != "opengrove-handoff:abcdefghijklmnopqrstuv" {
+	if output["agent_reference"] != "handoff:abcdefghijklmnopqrstuv" {
 		t.Fatalf("agent_reference = %#v", output["agent_reference"])
 	}
 	if output["fallback_used"] != false {
@@ -625,6 +629,10 @@ func TestSchemaContracts(t *testing.T) {
 	}
 	if description := createProperties["source"].(map[string]any)["description"].(string); !strings.Contains(description, "input Agent Session") {
 		t.Fatalf("source schema does not explain the input boundary: %q", description)
+	}
+	createOutputProperties := create["outputSchema"].(map[string]any)["properties"].(map[string]any)
+	if got := createOutputProperties["agent_reference"].(map[string]any)["pattern"]; got != "^handoff:[A-Za-z0-9_-]{20,32}$" {
+		t.Fatalf("agent_reference pattern = %#v", got)
 	}
 	for _, legacy := range []string{"upload_context", "mode", "from", "agent", "include_transcript", "full_session", "stdin", "compact"} {
 		if _, exists := createProperties[legacy]; exists {
