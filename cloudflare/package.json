@@ -10,7 +10,8 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "katex": "0.18.1"
+    "katex": "0.18.1",
+    "markdown-it": "15.0.1"
   },
   "devDependencies": {
     "wrangler": "4.120.1"

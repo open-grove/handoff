@@ -220,11 +220,11 @@ test("share handoffs preserve conclusions without inventing task sections", asyn
   assert.match(page, /class="panel-heading"/);
   assert.match(page, /🖐️/);
   assert.match(page, /🤖/);
-  assert.match(page, /<ul><li>理由和结论放在一起<\/li><\/ul>/);
-  assert.match(page, /<blockquote>SDK 只是代码接口，不能单凭名字判断进程结构。<\/blockquote>/);
+  assert.match(page, /<ul>\s*<li>理由和结论放在一起<\/li>\s*<\/ul>/);
+  assert.match(page, /<blockquote>\s*<p>SDK 只是代码接口，不能单凭名字判断进程结构。<\/p>\s*<\/blockquote>/);
   assert.match(page, /class="code-block"/);
   assert.match(page, /<span>plain text<\/span>/);
-  assert.match(page, /<pre><code class="language-text">View -&gt; Host<\/code><\/pre>/);
+  assert.match(page, /<pre><code class="language-text">View -&gt; Host\n<\/code><\/pre>/);
   const legacyPage = renderHTMLLegacy(created.handoff, {
     intent: "share",
     human_sections: [{ title: "先把三个东西分清楚", body: "MCP App 是通信协议。" }],
@@ -465,4 +465,94 @@ test("HTML escapes untrusted content", () => {
 test("top-level worker converts unexpected failures to safe JSON", async () => {
   const result = await worker.fetch(new Request("https://handoff.example/v1/handoffs"), {}, { waitUntil() {} });
   assert.equal(result.status, 404);
+});
+
+
+function documentPage(body, context = "") {
+  return renderHTML({ id: "abcdefghijklmnopqrstuv", title: "Markdown", goal: "Markdown", generator: "preserve" }, {
+    intent: "share", human_sections: [{ title: "正文", body }], context,
+    decisions: [], important_files: [], open_questions: [],
+  });
+}
+
+test("stored preserve handoffs render tables on the public route without changing Markdown", async () => {
+  const body = "| 情况 | 人数 |\n|---|---:|\n| 推荐作者 | 10 |\n| 有效推荐绩效 | **3** |";
+  const env = { HANDOFF_DB: fakeDB() };
+  const request = publishRequest();
+  const input = await request.json();
+  input.generator = "preserve";
+  input.sections = { intent: "share", human_sections: [{ title: "正文", body }], context: body };
+  const created = await (await route(new Request(request.url, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  }), env)).json();
+  const page = await (await route(new Request(created.share_url), env)).text();
+  assert.equal((page.match(/<table>/g) || []).length, 2);
+  assert.match(page, /<th>情况<\/th>/);
+  assert.match(page, /<th style="text-align:right">人数<\/th>/);
+  assert.match(page, /<td style="text-align:right"><strong>3<\/strong><\/td>/);
+  assert.match(page, /class="table-scroll"[^>]*tabindex="0"/);
+  assert.doesNotMatch(page, /<p>\| 情况/);
+  const raw = await (await route(new Request(`${created.share_url}.md`), env)).text();
+  assert.equal(raw, created.handoff.markdown);
+  assert.ok(raw.includes(body));
+});
+
+test("table cells preserve escaped pipes, inline code and safe links", () => {
+  const page = documentPage(String.raw`| Value | Notes |
+| :--- | :---: |
+| a\|b | [docs](https://example.com/docs) |
+| ` + "`x`" + ` | ~~old~~ and *new* |`);
+  assert.match(page, /<td style="text-align:left">a\|b<\/td>/);
+  assert.match(page, /<a href="https:\/\/example.com\/docs">docs<\/a>/);
+  assert.match(page, /<code>x<\/code>/);
+  assert.match(page, /<s>old<\/s> and <em>new<\/em>/);
+});
+
+test("nested lists, ordered starts and task markers render structurally", () => {
+  const page = documentPage("3. Third\n   - Nested **item**\n4. Fourth\n\n- [x] Done\n- [ ] Pending\n\n[reference][docs]\n\n[docs]: https://example.com");
+  assert.match(page, /<ol start="3">/);
+  assert.match(page, /<li>Third\s*<ul>\s*<li>Nested <strong>item<\/strong>/);
+  assert.match(page, /class="task-check is-checked"/);
+  assert.match(page, /aria-label="Incomplete"/);
+  assert.match(page, /<a href="https:\/\/example.com">reference<\/a>/);
+});
+
+test("Markdown does not activate raw HTML, image alt HTML or unsafe URLs", () => {
+  const page = documentPage(String.raw`<script>alert(1)</script>
+
+[bad](javascript:alert%281%29) [entity](jav&#x61;script:alert%281%29)
+
+[bad](vbscript:msgbox) [data](data:text/html,hello)
+
+![<img src=x onerror=alert(1)>](https://example.com/tracker)
+
+| Payload |
+| --- |
+| <svg onload=alert(1)> |
+
+~~~html
+<img src=x onerror=alert(1)>
+~~~`);
+  assert.doesNotMatch(page, /<script|<img|<svg onload|href="(?:javascript|vbscript|data):/i);
+  assert.match(page, /&lt;script&gt;/);
+  assert.match(page, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
+test("code blocks and escaped delimiters are not parsed as tables, tasks or math", () => {
+  const page = documentPage("~~~text\n| A | B |\n|---|---|\n- [x] $x$\n~~~\n\n    $y$\n\n`$z$`\n\n\\$literal\\$ and \\\\(q\\\\)");
+  assert.doesNotMatch(page, /<table>|class="math-inline"|class="math-display"|class="task-check is-checked"/);
+  assert.match(page, /<code>\$z\$<\/code>/);
+});
+
+test("math remains available inside tables and quoted blocks", () => {
+  const page = documentPage(String.raw`| Value |
+| --- |
+| $x^2$ |
+
+> $$
+> \frac{1}{2}
+> $$`);
+  assert.match(page, /<td><span class="math-inline">/);
+  assert.match(page, /<blockquote>\s*<div class="math-display">/);
+  assert.match(page, /<mfrac>/);
 });
