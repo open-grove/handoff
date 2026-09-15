@@ -18,13 +18,15 @@ import (
 func TestCreatePreparedMaterialPublishesWithoutStartingAnotherAgent(t *testing.T) {
 	for _, test := range []struct {
 		name, generator, intent, input string
-		attach                         bool
+		attach, review                 bool
 	}{
-		{"default-share-file", "", "share", "file", false},
-		{"default-continue-stdin", "", "continue", "stdin", true},
-		{"explicit-current-continue", "current-session", "continue", "file", false},
-		{"legacy-preserve-continue", "preserve", "continue", "file", false},
-		{"default-auto", "", "auto", "stdin", false},
+		{"default-share-file", "", "share", "file", false, false},
+		{"default-continue-stdin", "", "continue", "stdin", true, false},
+		{"explicit-current-continue", "current-session", "continue", "file", false, false},
+		{"legacy-preserve-continue", "preserve", "continue", "file", false, false},
+		{"default-auto", "", "auto", "stdin", false, false},
+		{"review-share", "", "share", "stdin", false, true},
+		{"review-continue", "", "continue", "file", false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("HANDOFF_CONFIG", filepath.Join(t.TempDir(), "config.json"))
@@ -67,6 +69,10 @@ func TestCreatePreparedMaterialPublishesWithoutStartingAnotherAgent(t *testing.T
 			args := []string{"Release failure", "--intent", test.intent, "--no-git"}
 			if test.generator != "" {
 				args = append(args, "--generator", test.generator)
+			}
+			if test.review {
+				t.Setenv("VISUAL", "true")
+				args = append(args, "--review")
 			}
 			if test.attach {
 				args = append(args, "--attach-context")

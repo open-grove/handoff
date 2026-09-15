@@ -639,3 +639,52 @@ func TestHTMLMathRenderingCannotInjectRawHTML(t *testing.T) {
 		t.Fatalf("unsupported math did not fall back to escaped source: %s", page)
 	}
 }
+
+func TestPreparedReviewKeepsHeadingsInsideCodeBlocks(t *testing.T) {
+	body := "## Background\n\nKeep the exact prompt below.\n\n```markdown\n### Current State\n\nExample state, not the current state.\n\n## For Agent\n\n<!-- handoff-section:Next Steps -->\n\nDo not rewrite this prompt.\n```\n\n## Current State\n\nReady for the fix.\n\n## Next Steps\n\n- Apply the verified fix."
+	for _, intent := range []string{IntentShare, IntentContinue} {
+		t.Run(intent, func(t *testing.T) {
+			sections, err := PreparedSections(intent, "Review test", types.Context{Source: "stdin", Messages: []types.Message{{Role: "user", Text: body}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if intent == IntentContinue && sections.CurrentState != "Ready for the fix." {
+				t.Fatalf("code-block heading was treated as current state: %q", sections.CurrentState)
+			}
+			draft := types.Handoff{Version: types.ProtocolVersion, ID: "review-draft", Goal: "Review test", Intent: intent, Source: types.SourceRef{Kind: "stdin"}, Generator: "preserve", CreatedAt: time.Now()}
+			reviewed, err := ParseReviewedMarkdown(RenderReviewDraft(draft, sections))
+			if err != nil {
+				t.Fatal(err)
+			}
+			preserved := reviewed.Context
+			if intent == IntentShare {
+				preserved = reviewed.HumanSections[0].Body
+			}
+			if preserved != body {
+				t.Fatalf("review corrupted the prepared %s document:\n%s", intent, preserved)
+			}
+		})
+	}
+}
+
+func TestPreparedPageKeepsPreambleAndLiteralAudienceHeadings(t *testing.T) {
+	body := "Opening text.\n\n| Scenario | Result |\n| --- | --- |\n| Preserve | Passed |\n\n### Details\n\n```markdown\n### Current State\n\n## For Agent\n\nLiteral prompt.\n```\n\nEnd of the prepared article."
+	sections, err := PreparedSections(IntentShare, "Page test", types.Context{Source: "stdin", Messages: []types.Message{{Role: "user", Text: body}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoff, err := BuildFromSections("abcdefghijklmnopqrstuv", "Page test", types.SourceRef{Kind: "stdin"}, sections, "preserve", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	human, _, ok := splitAudienceMarkdown(withoutFrontMatter(handoff.Markdown))
+	if !ok || human != body {
+		t.Fatalf("literal audience heading split the article: %q", human)
+	}
+	page := HTML(handoff)
+	for _, content := range []string{"Opening text.", "<table>", "<h3>Details</h3>", "### Current State\n\n## For Agent\n\nLiteral prompt.", "End of the prepared article."} {
+		if !strings.Contains(page, content) {
+			t.Fatalf("page lost %q", content)
+		}
+	}
+}

@@ -286,7 +286,7 @@ func render(handoff types.Handoff, sections Sections, reviewDraft bool) string {
 	if sections.Intent == IntentShare {
 		renderShareMarkdown(&output, handoff, sections, reviewDraft)
 	} else {
-		renderContinueMarkdown(&output, handoff, sections)
+		renderContinueMarkdown(&output, handoff, sections, reviewDraft)
 	}
 	if handoff.Context != nil && handoff.Context.Available {
 		fmt.Fprintf(&output, "### Attached Context\n\n完整的可读会话已在尽力脱敏后附带。需要核对细节时，请运行 `handoff context handoff:%s` 按需读取；它不是原始 Provider Session。\n\n", handoff.ID)
@@ -299,37 +299,68 @@ func render(handoff types.Handoff, sections Sections, reviewDraft bool) string {
 	return output.String()
 }
 
-func renderContinueMarkdown(output *strings.Builder, handoff types.Handoff, sections Sections) {
-	output.WriteString("## For Human\n\n")
-	fmt.Fprintf(output, "### 项目背景\n\n%s\n\n", valueOrUnknown(sections.HumanBackground))
-	fmt.Fprintf(output, "### 当前情况\n\n%s\n\n", valueOrUnknown(sections.HumanStatus))
-	writeListAtLevel(output, 3, "待办事项", sections.HumanTodos)
-	output.WriteString("## For Agent\n\n")
+func writeReviewMarker(output *strings.Builder, reviewDraft bool, marker string) {
+	if reviewDraft {
+		fmt.Fprintf(output, "<!-- handoff-%s -->\n", marker)
+	}
+}
+
+func writeAudience(output *strings.Builder, reviewDraft bool, title string) {
+	writeReviewMarker(output, reviewDraft, "audience:"+title)
+	fmt.Fprintf(output, "## %s\n\n", title)
+}
+
+func writeTextSection(output *strings.Builder, reviewDraft bool, title, body string) {
+	writeReviewMarker(output, reviewDraft, "section:"+title)
+	fmt.Fprintf(output, "### %s\n\n%s\n\n", title, valueOrUnknown(body))
+}
+
+func writeReviewList(output *strings.Builder, reviewDraft bool, title string, values []string) {
+	writeReviewMarker(output, reviewDraft, "section:"+title)
+	writeListAtLevel(output, 3, title, values)
+}
+
+func renderContinueMarkdown(output *strings.Builder, handoff types.Handoff, sections Sections, reviewDraft bool) {
+	writeAudience(output, reviewDraft, "For Human")
+	writeTextSection(output, reviewDraft, "项目背景", sections.HumanBackground)
+	writeTextSection(output, reviewDraft, "当前情况", sections.HumanStatus)
+	writeReviewList(output, reviewDraft, "待办事项", sections.HumanTodos)
+	writeAudience(output, reviewDraft, "For Agent")
 	fmt.Fprintf(output, "### Goal\n\n%s\n\n", valueOrUnknown(handoff.Goal))
-	fmt.Fprintf(output, "### Context\n\n%s\n\n", valueOrUnknown(sections.Context))
-	writeListAtLevel(output, 3, "Decisions", sections.Decisions)
-	fmt.Fprintf(output, "### Current State\n\n%s\n\n", valueOrUnknown(sections.CurrentState))
-	writeListAtLevel(output, 3, "Important Files", sections.ImportantFiles)
-	writeListAtLevel(output, 3, "Next Steps", sections.NextSteps)
-	writeListAtLevel(output, 3, "Open Questions", sections.OpenQuestions)
+	writeTextSection(output, reviewDraft, "Context", sections.Context)
+	writeReviewList(output, reviewDraft, "Decisions", sections.Decisions)
+	writeTextSection(output, reviewDraft, "Current State", sections.CurrentState)
+	writeReviewList(output, reviewDraft, "Important Files", sections.ImportantFiles)
+	writeReviewList(output, reviewDraft, "Next Steps", sections.NextSteps)
+	writeReviewList(output, reviewDraft, "Open Questions", sections.OpenQuestions)
 }
 
 func renderShareMarkdown(output *strings.Builder, handoff types.Handoff, sections Sections, reviewDraft bool) {
-	output.WriteString("## For Human\n\n")
+	writeAudience(output, reviewDraft, "For Human")
 	hideSinglePreserveHeading := !reviewDraft && handoff.Generator == "preserve" && len(sections.HumanSections) == 1
 	for index, section := range sections.HumanSections {
 		if hideSinglePreserveHeading && index == 0 {
 			fmt.Fprintf(output, "%s\n\n", section.Body)
 			continue
 		}
+		writeReviewMarker(output, reviewDraft, "human-section")
 		fmt.Fprintf(output, "### %s\n\n%s\n\n", markdownTitle(section.Title), section.Body)
 	}
-	output.WriteString("## For Agent\n\n")
-	fmt.Fprintf(output, "### Topic\n\n%s\n\n", valueOrUnknown(handoff.Goal))
-	fmt.Fprintf(output, "### Technical Context\n\n%s\n\n", valueOrUnknown(sections.Context))
-	writeListIfAny(output, 3, "Verified Decisions", sections.Decisions)
-	writeListIfAny(output, 3, "Open Questions", sections.OpenQuestions)
-	writeListIfAny(output, 3, "References", sections.ImportantFiles)
+	writeAudience(output, reviewDraft, "For Agent")
+	writeTextSection(output, reviewDraft, "Topic", handoff.Goal)
+	writeTextSection(output, reviewDraft, "Technical Context", sections.Context)
+	for _, section := range []struct {
+		title  string
+		values []string
+	}{
+		{"Verified Decisions", sections.Decisions},
+		{"Open Questions", sections.OpenQuestions},
+		{"References", sections.ImportantFiles},
+	} {
+		if len(section.values) > 0 {
+			writeReviewList(output, reviewDraft, section.title, section.values)
+		}
+	}
 }
 
 var reviewSectionTitles = []string{
@@ -343,32 +374,7 @@ var reviewSectionTitles = []string{
 // RenderReviewDraft adds invisible field markers so Markdown headings inside
 // user content cannot be mistaken for handoff section boundaries after edit.
 func RenderReviewDraft(handoff types.Handoff, sections Sections) string {
-	sections = normalizeSections(sections, handoff.Intent, handoff.Goal)
-	markdown := render(handoff, sections, true)
-	if sections.Intent == IntentShare {
-		cursor := 0
-		for _, section := range sections.HumanSections {
-			heading := "\n### " + markdownTitle(section.Title) + "\n"
-			relative := strings.Index(markdown[cursor:], heading)
-			if relative < 0 {
-				continue
-			}
-			index := cursor + relative
-			marked := "\n<!-- handoff-human-section -->" + heading
-			markdown = markdown[:index] + marked + markdown[index+len(heading):]
-			cursor = index + len(marked)
-		}
-	}
-	titles := reviewSectionTitles
-	if sections.Intent == IntentShare {
-		titles = []string{"Topic", "Technical Context", "Verified Decisions", "Open Questions", "References"}
-	}
-	for _, title := range titles {
-		heading := "\n### " + title + "\n"
-		marked := "\n<!-- handoff-section:" + title + " -->" + heading
-		markdown = strings.Replace(markdown, heading, marked, 1)
-	}
-	return markdown
+	return render(handoff, sections, true)
 }
 
 // ParseReviewedMarkdown reads the stable headings emitted by Render after a
@@ -389,7 +395,20 @@ func ParseReviewedMarkdown(markdown string) (Sections, error) {
 	hasMarkers := strings.Contains(body, "<!-- handoff-section:") || strings.Contains(body, "<!-- handoff-human-section -->")
 	skipHeading := ""
 	expectHumanHeading := false
-	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+	hasAudienceMarkers := strings.Contains(body, "<!-- handoff-audience:")
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	codeLines := markdownCodeLines(lines)
+	for index, line := range lines {
+		if codeLines[index] {
+			if current != "" {
+				values[current] = append(values[current], line)
+			}
+			continue
+		}
+		if hasAudienceMarkers && (line == "<!-- handoff-audience:For Human -->" || line == "<!-- handoff-audience:For Agent -->") {
+			current = ""
+			continue
+		}
 		if hasMarkers && line == "<!-- handoff-human-section -->" {
 			current = ""
 			expectHumanHeading = true
@@ -414,7 +433,7 @@ func ParseReviewedMarkdown(markdown string) (Sections, error) {
 			continue
 		}
 		if hasMarkers {
-			if line == skipHeading {
+			if skipHeading != "" && line == skipHeading {
 				skipHeading = ""
 				continue
 			}
@@ -426,7 +445,7 @@ func ParseReviewedMarkdown(markdown string) (Sections, error) {
 				continue
 			}
 		}
-		if line == "## For Human" || line == "## For Agent" {
+		if !hasAudienceMarkers && (line == "## For Human" || line == "## For Agent") {
 			current = ""
 			continue
 		}
@@ -613,20 +632,28 @@ func renderHumanSummaryWith(markdown string, renderer func(string) string) strin
 		body  []string
 	}
 	blocks := make([]summaryBlock, 0, 3)
-	for _, line := range lines {
-		if strings.HasPrefix(line, "### ") {
+	codeLines := markdownCodeLines(lines)
+	for index, line := range lines {
+		if !codeLines[index] && strings.HasPrefix(line, "### ") {
 			blocks = append(blocks, summaryBlock{title: strings.TrimSpace(strings.TrimPrefix(line, "### "))})
 			continue
 		}
-		if len(blocks) > 0 {
-			blocks[len(blocks)-1].body = append(blocks[len(blocks)-1].body, line)
+		if len(blocks) == 0 {
+			blocks = append(blocks, summaryBlock{})
 		}
+		blocks[len(blocks)-1].body = append(blocks[len(blocks)-1].body, line)
 	}
 	if len(blocks) == 0 {
 		return `<div class="summary-block"><div class="prose">` + renderer(markdown) + `</div></div>`
 	}
 	var output strings.Builder
 	for _, block := range blocks {
+		if block.title == "" {
+			if body := strings.TrimSpace(strings.Join(block.body, "\n")); body != "" {
+				fmt.Fprintf(&output, `<div class="summary-block"><div class="prose">%s</div></div>`, renderer(body))
+			}
+			continue
+		}
 		fmt.Fprintf(&output, `<section class="summary-block"><h3>%s</h3><div class="prose">%s</div></section>`, html.EscapeString(block.title), renderer(strings.Join(block.body, "\n")))
 	}
 	return output.String()
@@ -634,21 +661,22 @@ func renderHumanSummaryWith(markdown string, renderer func(string) string) strin
 
 func splitAudienceMarkdown(markdown string) (human, agent string, ok bool) {
 	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
-	humanMarker := "\n## For Human\n"
-	agentMarker := "\n## For Agent\n"
-	humanStart := strings.Index(markdown, humanMarker)
-	if humanStart < 0 {
-		return "", "", false
+	lines := strings.Split(markdown, "\n")
+	codeLines := markdownCodeLines(lines)
+	humanStart := -1
+	for index, line := range lines {
+		if codeLines[index] {
+			continue
+		}
+		if humanStart < 0 && line == "## For Human" {
+			humanStart = index + 1
+		} else if humanStart >= 0 && line == "## For Agent" {
+			human = strings.TrimSpace(strings.Join(lines[humanStart:index], "\n"))
+			agent = strings.TrimSpace(strings.Join(lines[index+1:], "\n"))
+			return human, agent, human != "" && agent != ""
+		}
 	}
-	humanStart += len(humanMarker)
-	agentStartRelative := strings.Index(markdown[humanStart:], agentMarker)
-	if agentStartRelative < 0 {
-		return "", "", false
-	}
-	agentStart := humanStart + agentStartRelative
-	human = strings.TrimSpace(markdown[humanStart:agentStart])
-	agent = strings.TrimSpace(markdown[agentStart+len(agentMarker):])
-	return human, agent, human != "" && agent != ""
+	return "", "", false
 }
 
 func withoutFrontMatter(markdown string) string {
@@ -876,7 +904,11 @@ func deterministicMarkdownSection(document string, titles ...string) string {
 		wanted[normalizeDeterministicHeading(title)] = struct{}{}
 	}
 	lines := strings.Split(strings.ReplaceAll(document, "\r\n", "\n"), "\n")
+	codeLines := markdownCodeLines(lines)
 	for index, line := range lines {
+		if codeLines[index] {
+			continue
+		}
 		match := deterministicHeadingPattern.FindStringSubmatch(strings.TrimSpace(line))
 		if len(match) != 3 {
 			continue
@@ -887,6 +919,9 @@ func deterministicMarkdownSection(document string, titles ...string) string {
 		level := len(match[1])
 		end := len(lines)
 		for next := index + 1; next < len(lines); next++ {
+			if codeLines[next] {
+				continue
+			}
 			nextMatch := deterministicHeadingPattern.FindStringSubmatch(strings.TrimSpace(lines[next]))
 			if len(nextMatch) == 3 && len(nextMatch[1]) <= level {
 				end = next
@@ -898,6 +933,41 @@ func deterministicMarkdownSection(document string, titles ...string) string {
 		}
 	}
 	return ""
+}
+
+// markdownCodeLines keeps literal fenced or indented code out of field parsing.
+// Closing fences must use the same marker and be at least as long as the opener.
+func markdownCodeLines(lines []string) []bool {
+	code := make([]bool, len(lines))
+	var marker byte
+	length := 0
+	for index, line := range lines {
+		trimmed := strings.TrimLeft(line, " ")
+		indent := len(line) - len(trimmed)
+		if length > 0 {
+			code[index] = true
+		}
+		if indent > 3 || strings.HasPrefix(line, "\t") {
+			code[index] = true
+			continue
+		}
+		if len(trimmed) == 0 || (trimmed[0] != '`' && trimmed[0] != '~') {
+			continue
+		}
+		run := 0
+		for run < len(trimmed) && trimmed[run] == trimmed[0] {
+			run++
+		}
+		if length > 0 {
+			if trimmed[0] == marker && run >= length && strings.TrimSpace(trimmed[run:]) == "" {
+				length = 0
+			}
+		} else if run >= 3 && (trimmed[0] != '`' || !strings.Contains(trimmed[run:], "`")) {
+			marker, length = trimmed[0], run
+			code[index] = true
+		}
+	}
+	return code
 }
 
 func normalizeDeterministicHeading(value string) string {
@@ -916,7 +986,12 @@ func deterministicMarkdownList(section string) []string {
 		}
 		current = ""
 	}
-	for _, line := range strings.Split(strings.ReplaceAll(section, "\r\n", "\n"), "\n") {
+	lines := strings.Split(strings.ReplaceAll(section, "\r\n", "\n"), "\n")
+	codeLines := markdownCodeLines(lines)
+	for index, line := range lines {
+		if codeLines[index] {
+			continue
+		}
 		match := deterministicListItemPattern.FindStringSubmatch(line)
 		if len(match) != 3 {
 			continue
