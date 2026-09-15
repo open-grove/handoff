@@ -48,13 +48,13 @@ handoff update
 
 ## Quick start
 
-Run this inside a Codex, Claude Code, Pi, or OpenCode project:
+Prepare the handoff in the current conversation, save it as `prepared.md`, then run:
 
 ```bash
-handoff create "Continue the CLI deployment" --intent continue
+handoff create "Continue the CLI deployment" --intent continue --file prepared.md
 ```
 
-The default generation path requires at least one supported Agent CLI to be installed and authenticated. Handoff discovers the source Session, launches a fresh isolated local Agent sidecar to prepare the handoff, and returns a message ready to send:
+The default `current-session` mode publishes Markdown prepared by the Agent in this conversation. The CLI reads stdin or files, applies best-effort redaction, and starts no second AI. It needs no additional Agent CLI. Missing prepared input returns an error instead of silently starting a new session. The command returns a message ready to send:
 
 ```markdown
 🖐️ **For Human**
@@ -81,7 +81,7 @@ Neither creation nor retrieval requires an account. Legacy `opengrove-handoff:<c
 Use `share` to preserve conclusions, reasoning, examples, and rejected alternatives:
 
 ```bash
-handoff create "MCP App architecture discussion" --intent share
+handoff create "MCP App architecture discussion" --intent share --file prepared.md
 ```
 
 ### Continue unfinished work
@@ -89,35 +89,34 @@ handoff create "MCP App architecture discussion" --intent share
 Use `continue` when another person or Agent should pick up the remaining work:
 
 ```bash
-handoff create "Continue fixing MCP App compatibility" --intent continue
+handoff create "Continue fixing MCP App compatibility" --intent continue --file prepared.md
 ```
 
 ### Publish prepared Markdown unchanged
 
-Use `preserve` when prompts, URLs, checksums, tables, or code blocks must keep their original structure. This path does not launch a second Agent to rewrite the content:
+The default `current-session` mode preserves prepared Markdown for both `share` and `continue`. Prompts, URLs, checksums, tables, and code blocks retain their structure, subject to best-effort redaction:
 
 ```bash
 handoff create "Long-stream test method" \
   --intent share \
-  --generator preserve \
   --file ./prepared-method.md
 ```
 
 You can also pipe content through stdin:
 
 ```bash
-some-agent-export | handoff create "Investigation result" --intent share --generator preserve
+cat prepared.md | handoff create "Investigation result" --intent share
 ```
 
 ### Attach the complete readable context
 
-By default, only the generated sections are published. Attach the full conversation explicitly when it is genuinely needed:
+By default, only prepared sections are published. To explicitly ask a new session to prepare from a source Session and also attach its full readable conversation:
 
 ```bash
-handoff create "Continue investigating the production issue" --intent continue --attach-context
+handoff create "Continue investigating the production issue" --generator new-session --intent continue --attach-context
 ```
 
-The attachment is a best-effort redacted, readable Canonical Context—not the raw Session—and excludes thinking and raw tool results. It remains stored with the Handoff until explicitly deleted.
+Both modes support attachments. With current-session, the attachment contains the supplied stdin/file material, not the original conversation. The Session-source example above attaches a best-effort redacted, readable Canonical Context—not the raw Session—and excludes thinking and raw tool results. It remains stored with the Handoff until explicitly deleted.
 
 The receiver can fetch it on demand:
 
@@ -139,37 +138,41 @@ This command supports Codex, Claude Code, and Pi, which keep standalone Session 
 
 ```bash
 # Inspect the source, sidecar Agent, and upload scope without generating or publishing
-handoff create "Next step" --dry-run
+handoff create "Next step" --file prepared.md --dry-run
 
 # Review the generated result in your editor, then publish after saving
-handoff create "Next step" --review
+handoff create "Next step" --intent continue --file prepared.md --review
 ```
 
 ## How it works
 
 ```text
-Codex / Claude Code / Pi / OpenCode / file / stdin
-                         │
-                         ▼
-              read-only Session snapshot
-                         │
-                         ▼
-        normalize + best-effort redact readable context
-                         │
-                ┌────────┴────────┐
-                ▼                 ▼
-       local Agent sidecar     preserve Markdown
-                └────────┬────────┘
-                         ▼
-                  immutable Handoff
-                    │           │
-                    ▼           ▼
-                share page   HANDOFF.md
+current-session (default)          new-session (explicit)
+prepared stdin / files             Session / stdin / files
+          │                                 │
+          ▼                                 ▼
+best-effort redaction              best-effort redaction
+          │                                 │
+          │                          fresh Agent session
+          └────────────────┬────────────────┘
+                           ▼
+                   immutable Handoff
+                   share / continue
+                     │           │
+                     ▼           ▼
+                 share page   HANDOFF.md
 ```
 
-The default `agent` generator starts a fresh, isolated local Agent CLI. It uses that CLI's existing authentication, provider, and default model, but never continues or modifies the source Session. The Handoff service itself does not call a model.
+`--generator` selects where preparation happens:
 
-If no supported Agent CLI is available, the CLI uses a limited deterministic fallback only when explicitly scoped content was provided through `--file` or stdin. If an Agent CLI is found but its invocation or output fails, the command returns the underlying error.
+- `current-session` (default): the calling conversation prepares the Markdown; the CLI publishes the supplied stdin/files.
+- `new-session` (explicit): a fresh isolated local Agent session prepares it, using that CLI's authentication, provider, and default model.
+
+Both support sharing discussion results and continuing work. A new session never continues or modifies the source Session. The Handoff service itself does not call a model. A conversational Agent should choose new-session only when the user explicitly requests it.
+
+For example: `handoff create "Continue investigating the release failure" --generator new-session --intent continue`.
+
+In explicitly selected new-session mode, if no supported Agent CLI is available, the CLI uses a limited deterministic fallback only when explicitly scoped content was provided through `--file` or stdin. If an Agent CLI is found but its invocation or output fails, the command returns the underlying error.
 
 ## Core concepts
 
@@ -179,18 +182,20 @@ If no supported Agent CLI is available, the CLI uses a limited deterministic fal
 |---|---|---|
 | `share` | Share what a discussion ultimately established | Conclusions, reasoning, evidence, examples, and trade-offs |
 | `continue` | Let the receiver continue unfinished work | Background, current state, files, next steps, and open questions |
-| `auto` | Let the Agent infer the intent from context | Default; prefer an explicit intent when you already know it |
+| `auto` | current-session uses share; new-session asks its new Agent to infer intent | The calling conversation should choose share or continue explicitly |
 
 ### Input, generation, and persistence
 
 | Control | Purpose |
 |---|---|
 | `--source` / `--file` / stdin | Select the input content |
-| `--generator agent|preserve` | Generate through a local Agent sidecar or preserve prepared Markdown |
-| `--runtime` | Select the local sidecar CLI for the `agent` generator only |
+| `--generator current-session|new-session` | Prepare here or start a fresh AI conversation; defaults to current-session |
+| `--runtime` | Select the local sidecar CLI for new-session only |
 | `--attach-context` | Independently choose whether to store the full redacted readable context |
 
-Normal use needs none of these overrides: `source=auto`, `generator=agent`, `runtime=auto`, and no full Context attachment.
+Normal use supplies prepared stdin/`--file` content and an explicit intent, with `generator=current-session`, `source=auto`, `runtime=auto`, and no full Context attachment. Session discovery via `--source` applies only to new-session.
+
+Legacy `preserve` / `agent` names alias current-session / new-session. Artifact provenance keeps `preserve` / `agent:<runtime>` for existing hosted renderers. For continue, Context retains the complete prepared document; state and next steps are copied from recognizable headings, with a source excerpt and the supplied goal as defaults when those headings are absent.
 
 ## Privacy and security
 
