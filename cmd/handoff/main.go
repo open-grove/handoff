@@ -41,10 +41,10 @@ var embeddedHandoffURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+(?::[0-9]+)?/
 const usage = `handoff — portable context for people and agents.
 
 AGENT QUICKSTART:
-  handoff create "discussion topic" --intent share
-  handoff create "next goal" --intent continue
-  prepared-markdown | handoff create "topic" --intent share --generator preserve
-  handoff create "next goal" --attach-context
+  handoff create "discussion topic" --intent share --file prepared.md
+  handoff create "next goal" --intent continue --file prepared.md
+  prepared-markdown | handoff create "topic" --intent share
+  handoff create "next goal" --generator new-session --intent continue
   handoff session locate                     Return the same-machine Session path
   handoff receive handoff:<code>             Print a received HANDOFF.md
   handoff context handoff:<code>             Read an attached full Context
@@ -79,12 +79,13 @@ Context sources:
 Create pipeline:
   source -> sanitized Canonical Context -> generator -> immutable Handoff
   source chooses input only. generator chooses who writes the structured sections.
-  With generator=agent, runtime chooses the fresh local sidecar CLI only.
+  With generator=new-session, runtime chooses the fresh local sidecar CLI only.
   --attach-context independently controls whether Canonical Context is stored.
 
 Agent interaction:
   Infer share vs continue; ask only when material ambiguity remains.
-  Default to local agent generation and no Context attachment.
+  Default to current-session: prepare scoped Markdown here, then pass stdin/--file.
+  Start a new Agent only when new-session is explicitly requested. No attachment by default.
   Context attachment requires an explicit user request.
   Resolve source/runtime automatically; do not present them as a questionnaire.
 
@@ -93,9 +94,11 @@ Agent auto-update:
   Progress goes to stderr; HANDOFF_NO_AUTO_UPDATE=1 disables installation.
 
 Generators:
-  agent (default) starts a fresh sidecar matching the current Agent host. It
-  reuses that CLI's auth, config, and default model without resuming the source.
-  preserve publishes prepared stdin/file Markdown without a second Agent rewrite.
+  current-session (default) publishes Markdown prepared in the calling conversation
+  through stdin/--file. It never starts another Agent or discovers a raw Session.
+  new-session explicitly starts a fresh sidecar matching the current Agent host,
+  reusing its CLI auth, config, and default model without resuming the source.
+  Both support share and continue. Legacy preserve/agent aliases remain accepted.
   deterministic is an internal backup used only when no sidecar CLI is available.
   Its warnings stay in the creator output and are not written into the shared page.
   --attach-context independently stores the full sanitized readable context.
@@ -109,10 +112,10 @@ Usage:
 
 Preferred flags:
   --intent auto|share|continue            Artifact intent (default: auto)
-  --source auto|codex|claude|pi|opencode  Input Session only (default: auto)
+  --source auto|codex|claude|pi|opencode  Input Session for new-session (default: auto)
   --file PATH                             Input files instead of a Session; repeatable
-  --generator agent|preserve              How sections are produced (default: agent)
-  --runtime auto|codex|claude|pi|opencode Local sidecar for agent generator only
+  --generator current-session|new-session Preparation location (default: current-session)
+  --runtime auto|codex|claude|pi|opencode Local sidecar for new-session only
   --attach-context                        Persist full Canonical Context independently
   --review                                Edit generated Markdown before publish
   --dry-run                               Inspect without Agent or network write
@@ -121,14 +124,17 @@ Preferred flags:
   --no-git                                Omit repository metadata
 
 Generator note:
-  agent starts a fresh isolated sidecar; it never resumes or compacts the source.
+  current-session requires prepared --file/stdin Markdown and starts no Agent.
+  new-session starts a fresh isolated sidecar; it never resumes or compacts the source.
   runtime selects only that sidecar, never the input source or model.
-  preserve publishes prepared --file/stdin Markdown without a second Agent rewrite.
+  Both support share and continue. auto intent resolves to share in current-session;
+  new-session lets the new Agent infer intent. Prefer an explicit intent.
   deterministic is internal no-sidecar backup; its warning stays at creation time.
 
 Risk: write
 
 Compatibility:
+  --generator preserve/agent alias current-session/new-session respectively.
   --ttl, --mode, --from, --agent, and --stdin remain accepted temporarily.
 `
 
@@ -296,8 +302,8 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	flags.Usage = func() { fmt.Fprint(os.Stdout, createUsage) }
 	sourceName := flags.String("source", "auto", "input Session source only: auto, codex, claude, pi, or opencode")
 	intentName := flags.String("intent", "auto", "artifact intent: auto, share, or continue")
-	generatorName := flags.String("generator", "agent", "section generator: agent sidecar or preserve prepared Markdown")
-	runtimeName := flags.String("runtime", "auto", "local sidecar CLI for the agent generator only; never selects the source or model")
+	generatorName := flags.String("generator", "current-session", "preparation: current-session (prepared Markdown) or new-session (fresh Agent)")
+	runtimeName := flags.String("runtime", "auto", "local sidecar CLI for new-session only; never selects the source or model")
 	attachContext := flags.Bool("attach-context", false, "persist full Canonical Context independently of generation")
 	legacyFrom := flags.String("from", "auto", "deprecated alias for --source")
 	legacyMode := flags.String("mode", "agent", "deprecated generator alias: agent, local, or session")
@@ -352,12 +358,6 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	if intent == "" {
 		return errors.New("--intent must be auto, share, or continue")
 	}
-	if selection.Generator == "preserve" {
-		if intent == card.IntentContinue {
-			return errors.New("--generator preserve publishes prepared material for sharing and cannot be used with --intent continue")
-		}
-		intent = card.IntentShare
-	}
 	var readStdin bool
 	var stdinReader io.Reader
 	if !selection.SessionPath {
@@ -370,6 +370,9 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		}
 		if selection.Source != "auto" && readStdin {
 			return errors.New("--source selects an Agent Session and cannot be combined with piped stdin; omit --source when stdin is the input")
+		}
+		if selection.Generator == "current-session" && !readStdin && len(files) == 0 {
+			return errors.New("current-session requires Markdown prepared in the current conversation through stdin or --file; prepare the handoff here, or explicitly use --generator new-session to start a fresh Agent")
 		}
 	}
 	contextSource, err := source.Load(source.Options{
@@ -386,12 +389,13 @@ func runCreate(profileName, outputFormat string, args []string) error {
 		return printLocalSession(goal, contextSource, outputFormat == "json" || *jsonOutput, *dryRun)
 	}
 	contextSource = card.SanitizeContext(contextSource)
-	var preserveSections types.Sections
-	if selection.Generator == "preserve" {
-		preserveSections, err = card.PreserveSections(goal, contextSource)
+	var preparedSections types.Sections
+	if selection.Generator == "current-session" {
+		preparedSections, err = card.PreparedSections(intent, goal, contextSource)
 		if err != nil {
 			return err
 		}
+		intent = preparedSections.Intent
 	}
 	var contextAttachment *types.ContextAttachment
 	if selection.AttachContext {
@@ -409,7 +413,7 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	if *dryRun {
 		resolvedSidecar := ""
 		var sidecarResolutionError error
-		if selection.Generator == "agent" {
+		if selection.Generator == "new-session" {
 			resolvedSidecar, sidecarResolutionError = (agentruntime.Runner{}).Resolve(selection.Runtime, contextSource.Source)
 		}
 		report := map[string]any{
@@ -443,11 +447,13 @@ func runCreate(profileName, outputFormat string, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	apiClient := client.Client{Server: profile.Server}
-	sections := card.FallbackSections(intent, goal, contextSource)
-	generator := "deterministic"
+	sections := preparedSections
+	// Keep artifact provenance compatible with existing hosted renderers.
+	generator := "preserve"
 	var generationWarning error
-	switch selection.Generator {
-	case "agent":
+	if selection.Generator == "new-session" {
+		sections = card.FallbackSections(intent, goal, contextSource)
+		generator = "deterministic"
 		runner := agentruntime.Runner{}
 		runtime, resolveErr := runner.Resolve(selection.Runtime, contextSource.Source)
 		if resolveErr != nil {
@@ -464,9 +470,6 @@ func runCreate(profileName, outputFormat string, args []string) error {
 			sections = generated
 			generator = "agent:" + runtime
 		}
-	case "preserve":
-		sections = preserveSections
-		generator = "preserve"
 	}
 	if *review {
 		sections, err = reviewSections(ctx, goal, contextSource, sections, generator)
@@ -573,7 +576,7 @@ func markdownLinkLabel(value string) string {
 }
 
 func uploadDescription(generator string, attachContext bool) string {
-	if generator == "preserve" {
+	if generator == "current-session" {
 		if attachContext {
 			return "best-effort-redacted prepared Markdown plus the explicit full sanitized readable context attachment"
 		}
@@ -615,10 +618,14 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 		return createSelection{}, errors.New("--runtime must be auto, codex, claude, pi, or opencode")
 	}
 	if selection.Generator == "deterministic" {
-		return createSelection{}, errors.New("--generator deterministic is internal-only; use --generator preserve for prepared stdin/file Markdown, or omit --generator to use an Agent sidecar")
+		return createSelection{}, errors.New("--generator deterministic is internal-only; use current-session (the default) for prepared stdin/file Markdown, or --generator new-session to start a fresh Agent")
 	}
-	if selection.Generator != "agent" && selection.Generator != "preserve" {
-		return createSelection{}, errors.New("--generator must be agent or preserve")
+	if replacement, ok := map[string]string{"agent": "new-session", "preserve": "current-session"}[selection.Generator]; ok {
+		selection.Deprecated = append(selection.Deprecated, "--generator "+selection.Generator+" is deprecated; use --generator "+replacement)
+		selection.Generator = replacement
+	}
+	if selection.Generator != "current-session" && selection.Generator != "new-session" {
+		return createSelection{}, errors.New("--generator must be current-session or new-session (legacy aliases: preserve or agent)")
 	}
 	applyAlias := func(canonicalName, canonicalValue, legacyName, legacyValue string, mapValue func(string) string) error {
 		if !input.Set[legacyName] {
@@ -655,7 +662,7 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 		return createSelection{}, err
 	}
 	modeMap := func(value string) string {
-		return map[string]string{"agent": "agent", "local": "preserve", "session": "session"}[value]
+		return map[string]string{"agent": "new-session", "local": "current-session", "session": "session"}[value]
 	}
 	if input.Set["mode"] {
 		mapped := modeMap(strings.ToLower(strings.TrimSpace(input.LegacyMode)))
@@ -677,8 +684,8 @@ func resolveCreateSelection(input createSelectionInput) (createSelection, error)
 	if input.Set["stdin"] {
 		selection.Deprecated = append(selection.Deprecated, "--stdin is deprecated; pipe input without the flag")
 	}
-	if selection.Generator != "agent" && selection.Runtime != "auto" && input.Set["runtime"] {
-		return createSelection{}, fmt.Errorf("--runtime only selects the local sidecar for --generator agent; it cannot be used with --generator %s", selection.Generator)
+	if selection.Generator != "new-session" && selection.Runtime != "auto" {
+		return createSelection{}, fmt.Errorf("--runtime only selects the local sidecar for --generator new-session; it cannot be used with --generator %s", selection.Generator)
 	}
 	return selection, nil
 }
@@ -1344,13 +1351,13 @@ func schemaContract(command string) (map[string]any, error) {
 				"type": "object", "required": []string{"goal"}, "additionalProperties": false,
 				"properties": map[string]any{
 					"goal":           stringProperty("Short topic for share intent or next goal for continue intent."),
-					"intent":         map[string]any{"type": "string", "enum": []string{"auto", "share", "continue"}, "default": "auto", "description": "Choose a discussion-result share or resumable task handoff."},
-					"source":         map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto", "description": "Select only the input Agent Session. Do not combine a non-auto value with file or piped stdin input."},
-					"generator":      map[string]any{"type": "string", "enum": []string{"agent", "preserve"}, "default": "agent", "description": "Choose how sections are produced. agent starts a fresh isolated local sidecar; preserve publishes prepared stdin/file Markdown without a second Agent rewrite. Deterministic extraction is internal fallback only."},
-					"runtime":        map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto", "description": "Select only the fresh local sidecar CLI used by generator=agent. It never selects the input source or model and must remain auto for other generators."},
+					"intent":         map[string]any{"type": "string", "enum": []string{"auto", "share", "continue"}, "default": "auto", "description": "Choose a discussion-result share or resumable task handoff. auto resolves to share in current-session; new-session lets the new Agent infer intent."},
+					"source":         map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto", "description": "Select only the input Agent Session for new-session. Do not combine a non-auto value with file or piped stdin input."},
+					"generator":      map[string]any{"type": "string", "enum": []string{"current-session", "new-session"}, "default": "current-session", "description": "current-session publishes Markdown prepared in the calling conversation through stdin/file, with no new Agent. new-session explicitly starts a fresh local sidecar. Both support share and continue. Legacy preserve/agent aliases remain accepted."},
+					"runtime":        map[string]any{"type": "string", "enum": []string{"auto", "codex", "claude", "pi", "opencode"}, "default": "auto", "description": "Select only the fresh local sidecar CLI used by generator=new-session. It never selects the input source or model and must remain auto for other generators."},
 					"attach_context": booleanProperty("Persist the complete sanitized readable Context beside the handoff, independently of the generator."),
 					"review":         booleanProperty("Edit generated Markdown before publishing."),
-					"file":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable input context file path. Files replace Agent Session discovery, so leave source=auto."},
+					"file":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repeatable input Markdown file path. current-session requires files or piped stdin prepared by the caller; new-session may also discover a Session. Leave source=auto with files."},
 					"no_git":         booleanProperty("Omit repository metadata."),
 					"json":           booleanProperty("Print machine-readable output."),
 					"dry_run":        booleanProperty("Inspect source and upload behavior without an Agent or network write."),
@@ -1362,15 +1369,15 @@ func schemaContract(command string) (map[string]any, error) {
 			"_meta": map[string]any{
 				"envelope_version": "1.0", "risk": "write", "danger": false,
 				"session":              "read-only snapshot; never compacted, resumed, or modified",
-				"default_upload":       "generated sections only; --attach-context is the explicit persistence boundary",
-				"default_model_config": "the local sidecar inherits its CLI's existing provider and default model; --runtime never selects either",
+				"default_upload":       "prepared sections only; --attach-context is the explicit persistence boundary",
+				"default_model_config": "only new-session starts a local sidecar and inherits its CLI's existing provider and default model; --runtime never selects either",
 				"canonical_context":    "all readable user/assistant messages after normalization and best-effort redaction; excludes thinking and tool results",
 				"native_compact":       "a readable native compact summary is auxiliary evidence; it never replaces the canonical message history and native /compact is never invoked",
 				"context_attachment":   "explicit opt-in; readable messages only, no thinking or tool results; best-effort redaction cannot guarantee removal of every natural-language identifier",
-				"agent_interaction":    "infer share vs continue and ask only on material ambiguity; default to local agent generation with no Context attachment; use preserve when exact prepared Prompt/URL/checksum/code must survive without a second Agent rewrite; attachment requires explicit user request; source/runtime are internal auto-routing",
+				"agent_interaction":    "infer share vs continue and ask only on material ambiguity; default to current-session and prepare scoped stdin/file Markdown in this conversation; start new-session only when explicitly requested; attachment requires explicit user request; source/runtime are internal auto-routing for new-session",
 				"agent_auto_update":    "macOS/Linux Agent invocations check at most once per 24 hours; status is stderr-only, failures do not block, --dry-run skips it, and HANDOFF_NO_AUTO_UPDATE=1 disables it",
 				"lifetime":             "permanent until explicitly deleted",
-				"legacy":               "--ttl is ignored; --mode, --from, --agent, and --stdin are accepted temporarily but omitted from the preferred contract",
+				"legacy":               "preserve aliases current-session; agent aliases new-session; artifact provenance retains preserve and agent:<runtime> for existing servers; --ttl is ignored; --mode, --from, --agent, and --stdin are accepted temporarily but omitted from the preferred contract",
 			},
 		}, nil
 	case "session.locate":

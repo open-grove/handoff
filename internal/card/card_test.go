@@ -89,7 +89,7 @@ func TestShareFallbackKeepsWarningAtCreationBoundary(t *testing.T) {
 
 func TestPreserveSectionsKeepsPreparedMarkdownWithoutSidecarRewrite(t *testing.T) {
 	body := "# 测试方法\n\n## Prompt 1\n\n请不要改写。\n\n## Prompt 2\n\nhttps://example.com/download.bin\n\n```bash\nprintf '%s' value\n```\n\nSHA-256: `0123456789abcdef`"
-	sections, err := PreserveSections("测试方法", SanitizeContext(types.Context{
+	sections, err := PreparedSections(IntentShare, "测试方法", SanitizeContext(types.Context{
 		Source:   "stdin",
 		Messages: []types.Message{{Role: "user", Text: body}},
 	}))
@@ -110,7 +110,7 @@ func TestPreserveSectionsKeepsPreparedMarkdownWithoutSidecarRewrite(t *testing.T
 }
 
 func TestPreserveSectionsUsesFileNamesAndRejectsAgentSessions(t *testing.T) {
-	sections, err := PreserveSections("files", types.Context{
+	sections, err := PreparedSections(IntentShare, "files", types.Context{
 		Source: "file",
 		Messages: []types.Message{
 			{Role: "user", Text: "File: prompts.md\n\n# Prompt\n\nExact"},
@@ -123,14 +123,14 @@ func TestPreserveSectionsUsesFileNamesAndRejectsAgentSessions(t *testing.T) {
 	if len(sections.HumanSections) != 2 || sections.HumanSections[0].Title != "prompts.md" || sections.HumanSections[0].Body != "# Prompt\n\nExact" || sections.HumanSections[1].Title != "checksums.txt" {
 		t.Fatalf("file input was not preserved as separate sections: %#v", sections.HumanSections)
 	}
-	if _, err := PreserveSections("all", types.Context{Source: "codex", Messages: []types.Message{{Role: "user", Text: "all"}}}); err == nil || !strings.Contains(err.Error(), "stdin or --file") {
+	if _, err := PreparedSections(IntentShare, "all", types.Context{Source: "codex", Messages: []types.Message{{Role: "user", Text: "all"}}}); err == nil || !strings.Contains(err.Error(), "stdin or --file") {
 		t.Fatalf("Agent Session preserve was accepted: %v", err)
 	}
 }
 
 func TestSinglePreserveDocumentDoesNotRepeatFileNameOrMatchingH1(t *testing.T) {
 	goal := "WW/Bedrock 单次长流灰度测试方法"
-	sections, err := PreserveSections(goal, types.Context{
+	sections, err := PreparedSections(IntentShare, goal, types.Context{
 		Source:   "file",
 		Messages: []types.Message{{Role: "user", Text: "File: ww-bedrock-single-turn-gray-test.md\n\n# " + goal + "\n\n## 目的\n\n验证长流。"}},
 	})

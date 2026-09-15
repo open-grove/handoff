@@ -296,18 +296,18 @@ func TestFormatShareMessageSeparatesHumanAndAgentInstructions(t *testing.T) {
 
 func TestResolveCreateSelectionUsesPreferredVocabulary(t *testing.T) {
 	selection, err := resolveCreateSelection(createSelectionInput{
-		Source: "codex", Generator: "agent", Runtime: "claude", AttachContext: true,
+		Source: "codex", Generator: "new-session", Runtime: "claude", AttachContext: true,
 		Set: map[string]bool{"source": true, "generator": true, "runtime": true, "attach-context": true},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.Source != "codex" || selection.Generator != "agent" || selection.Runtime != "claude" || !selection.AttachContext || selection.SessionPath || len(selection.Deprecated) != 0 {
+	if selection.Source != "codex" || selection.Generator != "new-session" || selection.Runtime != "claude" || !selection.AttachContext || selection.SessionPath || len(selection.Deprecated) != 0 {
 		t.Fatalf("unexpected preferred selection: %#v", selection)
 	}
 }
 
-func TestRuntimeOnlyAppliesToAgentGenerator(t *testing.T) {
+func TestRuntimeOnlyAppliesToNewSession(t *testing.T) {
 	_, err := resolveCreateSelection(createSelectionInput{
 		Source: "auto", Generator: "preserve", Runtime: "opencode",
 		Set: map[string]bool{"generator": true, "runtime": true},
@@ -322,7 +322,7 @@ func TestCloudGeneratorIsRemoved(t *testing.T) {
 		Source: "auto", Generator: "cloud", Runtime: "auto",
 		Set: map[string]bool{"generator": true},
 	})
-	if err == nil || !strings.Contains(err.Error(), "--generator must be agent or preserve") {
+	if err == nil || !strings.Contains(err.Error(), "--generator must be current-session or new-session") {
 		t.Fatalf("removed cloud generator was accepted: %v", err)
 	}
 }
@@ -332,18 +332,18 @@ func TestDeterministicGeneratorIsInternalOnly(t *testing.T) {
 		Source: "auto", Generator: "deterministic", Runtime: "auto",
 		Set: map[string]bool{"generator": true},
 	})
-	if err == nil || !strings.Contains(err.Error(), "internal-only") || !strings.Contains(err.Error(), "--generator preserve") {
+	if err == nil || !strings.Contains(err.Error(), "internal-only") || !strings.Contains(err.Error(), "current-session") {
 		t.Fatalf("explicit deterministic generator was accepted or guidance was unclear: %v", err)
 	}
 }
 
-func TestLegacyLocalModeMapsToPreserve(t *testing.T) {
+func TestLegacyLocalModeMapsToCurrentSession(t *testing.T) {
 	selection, err := resolveCreateSelection(createSelectionInput{
-		Source: "auto", Generator: "agent", Runtime: "auto", LegacyMode: "local",
+		Source: "auto", Generator: "new-session", Runtime: "auto", LegacyMode: "local",
 		Set: map[string]bool{"mode": true},
 	})
-	if err != nil || selection.Generator != "preserve" {
-		t.Fatalf("legacy --mode local did not map to preserve: %#v, %v", selection, err)
+	if err != nil || selection.Generator != "current-session" {
+		t.Fatalf("legacy --mode local did not map to current-session: %#v, %v", selection, err)
 	}
 }
 
@@ -399,6 +399,7 @@ func TestCreateDoesNotPublishDeterministicFallbackWhenAgentGenerationFails(t *te
 
 	err := runCreate("", "text", []string{
 		"Agent generation failure",
+		"--generator", "new-session",
 		"--intent", "share",
 		"--file", sourcePath,
 		"--no-git",
@@ -428,6 +429,7 @@ func TestCreateDoesNotFallbackWhenExplicitAgentRuntimeIsMissing(t *testing.T) {
 
 	err := runCreate("", "text", []string{
 		"OpenCode required",
+		"--generator", "new-session",
 		"--intent", "share",
 		"--file", sourcePath,
 		"--runtime", "opencode",
@@ -448,7 +450,7 @@ func TestCreateDoesNotFallbackWhenExplicitAgentRuntimeIsMissing(t *testing.T) {
 
 func TestResolveCreateSelectionAcceptsOpenCode(t *testing.T) {
 	selection, err := resolveCreateSelection(createSelectionInput{
-		Source: "opencode", Generator: "agent", Runtime: "opencode",
+		Source: "opencode", Generator: "new-session", Runtime: "opencode",
 		Set: map[string]bool{"source": true, "runtime": true},
 	})
 	if err != nil {
@@ -461,21 +463,21 @@ func TestResolveCreateSelectionAcceptsOpenCode(t *testing.T) {
 
 func TestResolveCreateSelectionMapsLegacyVocabulary(t *testing.T) {
 	selection, err := resolveCreateSelection(createSelectionInput{
-		Source: "auto", Generator: "agent", Runtime: "auto",
+		Source: "auto", Generator: "new-session", Runtime: "auto",
 		LegacyFrom: "pi", LegacyMode: "agent", LegacyAgent: "codex",
 		Set: map[string]bool{"from": true, "mode": true, "agent": true},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.Source != "pi" || selection.Generator != "agent" || selection.Runtime != "codex" || len(selection.Deprecated) != 3 {
+	if selection.Source != "pi" || selection.Generator != "new-session" || selection.Runtime != "codex" || len(selection.Deprecated) != 3 {
 		t.Fatalf("unexpected compatibility selection: %#v", selection)
 	}
 }
 
 func TestResolveCreateSelectionRejectsConflicts(t *testing.T) {
 	_, err := resolveCreateSelection(createSelectionInput{
-		Source: "codex", Generator: "agent", Runtime: "auto",
+		Source: "codex", Generator: "new-session", Runtime: "auto",
 		LegacyFrom: "pi",
 		Set:        map[string]bool{"source": true, "from": true},
 	})
@@ -615,7 +617,7 @@ func TestSchemaContracts(t *testing.T) {
 	}
 	createProperties := create["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	generatorEnum := createProperties["generator"].(map[string]any)["enum"].([]string)
-	if !strings.Contains(strings.Join(generatorEnum, ","), "preserve") || strings.Contains(strings.Join(generatorEnum, ","), "deterministic") || strings.Contains(strings.Join(generatorEnum, ","), "cloud") {
+	if strings.Join(generatorEnum, ",") != "current-session,new-session" || createProperties["generator"].(map[string]any)["default"] != "current-session" {
 		t.Fatalf("create schema generator boundary is wrong: %#v", generatorEnum)
 	}
 	for _, property := range []string{"source", "runtime"} {

@@ -48,13 +48,13 @@ handoff update
 
 ## 快速开始
 
-在 Codex、Claude Code、Pi 或 OpenCode 的项目目录中运行：
+先在当前对话中整理好交接内容，保存为 `prepared.md`，再运行：
 
 ```bash
-handoff create "继续完成 CLI 部署" --intent continue
+handoff create "继续完成 CLI 部署" --intent continue --file prepared.md
 ```
 
-默认生成需要至少一个受支持的 Agent CLI 已安装并完成认证。Handoff 会自动发现来源 Session，启动一个隔离的本机 Agent 旁路生成交接内容，然后返回可直接发送的消息：
+默认使用 `current-session`：由当前对话里的 Agent 整理内容，CLI 读取 stdin 或文件、尽力脱敏并发布，不再启动另一个 AI，也不要求安装第二个 Agent CLI。缺少整理好的输入会直接报错，不会自行改用新会话。返回可直接发送的消息：
 
 ```markdown
 🖐️ **For Human**
@@ -81,7 +81,7 @@ handoff receive 'handoff:<code>'
 适合传递结论、理由、示例和已经排除的方案：
 
 ```bash
-handoff create "MCP App 架构讨论" --intent share
+handoff create "MCP App 架构讨论" --intent share --file prepared.md
 ```
 
 ### 交接未完成工作
@@ -89,35 +89,34 @@ handoff create "MCP App 架构讨论" --intent share
 适合让另一个人或 Agent 接着做：
 
 ```bash
-handoff create "继续修复 MCP App 兼容性" --intent continue
+handoff create "继续修复 MCP App 兼容性" --intent continue --file prepared.md
 ```
 
 ### 原样发布准备好的 Markdown
 
-当 Prompt、URL、校验值、表格或代码块需要保留原结构时，使用 `preserve`。它不会启动第二个 Agent 改写内容：
+默认的 `current-session` 会保留准备好的 Markdown，适用于 `share` 和 `continue`。Prompt、URL、校验值、表格和代码块会保留结构，并经过尽力脱敏：
 
 ```bash
 handoff create "长流测试方法" \
   --intent share \
-  --generator preserve \
   --file ./prepared-method.md
 ```
 
 也可以从 stdin 读取：
 
 ```bash
-some-agent-export | handoff create "调查结果" --intent share --generator preserve
+cat prepared.md | handoff create "调查结果" --intent share
 ```
 
 ### 附带完整可读上下文
 
-默认只发布生成后的 sections。只有确实需要完整对话时才显式添加：
+默认只发布整理好的内容。只有明确需要新会话从来源 Session 整理交接，并附上完整可读对话时才运行：
 
 ```bash
-handoff create "继续排查线上问题" --intent continue --attach-context
+handoff create "继续排查线上问题" --generator new-session --intent continue --attach-context
 ```
 
-附件是经过尽力脱敏的可读 Canonical Context，不是原始 Session，也不包含 thinking 或原始工具结果。它会与 Handoff 一起永久保存，直到显式删除。
+两个模式都支持附件。`current-session` 的附件是所提供的 stdin/文件内容，不能称为原始对话附件。上例使用 Session 来源，附件是经过尽力脱敏的可读 Canonical Context，不是原始 Session，也不包含 thinking 或原始工具结果。它会与 Handoff 一起永久保存，直到显式删除。
 
 接收方按需读取附件：
 
@@ -139,37 +138,41 @@ handoff session locate --goal "继续完成剩余实现"
 
 ```bash
 # 查看来源、旁路 Agent 和上传范围，不生成也不发布
-handoff create "下一步" --dry-run
+handoff create "下一步" --file prepared.md --dry-run
 
 # 在编辑器中检查生成结果，保存后再发布
-handoff create "下一步" --review
+handoff create "下一步" --intent continue --file prepared.md --review
 ```
 
 ## 工作原理
 
 ```text
-Codex / Claude Code / Pi / OpenCode / file / stdin
-                         │
-                         ▼
-              read-only Session snapshot
-                         │
-                         ▼
-        normalize + best-effort redact readable context
-                         │
-                ┌────────┴────────┐
-                ▼                 ▼
-       local Agent sidecar     preserve Markdown
-                └────────┬────────┘
-                         ▼
-                  immutable Handoff
-                    │           │
-                    ▼           ▼
-                share page   HANDOFF.md
+current-session (default)          new-session (explicit)
+prepared stdin / files             Session / stdin / files
+          │                                 │
+          ▼                                 ▼
+best-effort redaction              best-effort redaction
+          │                                 │
+          │                          fresh Agent session
+          └────────────────┬────────────────┘
+                           ▼
+                   immutable Handoff
+                   share / continue
+                     │           │
+                     ▼           ▼
+                 share page   HANDOFF.md
 ```
 
-默认的 `agent` generator 会启动一个全新、隔离的本机 Agent CLI。它沿用该 CLI 已有的认证、provider 和默认模型，但不会继续或修改来源 Session。Handoff 服务本身不调用模型。
+`--generator` 决定在哪里整理内容：
 
-如果本机找不到受支持的 Agent CLI，只有通过 `--file` 或 stdin 提供了明确范围的内容时，CLI 才会使用有限的 deterministic 备用提取。已找到 Agent CLI 但调用或生成失败时，命令会直接返回真实错误。
+- `current-session`（默认）：当前对话整理，CLI 发布所提供的 stdin/文件内容。
+- `new-session`（显式选择）：启动一个全新、隔离的本机 Agent 会话来整理内容，沿用该 CLI 的认证、provider 和默认模型。
+
+两种方式都支持分享讨论结果和交接未完成工作。新会话不会继续或修改来源 Session，Handoff 服务本身不调用模型。只有用户明确要求新会话时，聊天中的 Agent 才应选用 `new-session`。
+
+例如：`handoff create "继续排查发布问题" --generator new-session --intent continue`。
+
+在显式选择 `new-session` 时，如果本机找不到受支持的 Agent CLI，只有通过 `--file` 或 stdin 提供了明确范围的内容时，CLI 才会使用有限的 deterministic 备用提取。已找到 Agent CLI 但调用或生成失败时，命令会直接返回真实错误。
 
 ## 核心概念
 
@@ -179,18 +182,20 @@ Codex / Claude Code / Pi / OpenCode / file / stdin
 |---|---|---|
 | `share` | 分享一次讨论最终弄明白了什么 | 结论、推理、证据、示例与取舍 |
 | `continue` | 让接收方继续未完成工作 | 背景、当前状态、文件、下一步与未决问题 |
-| `auto` | 让 Agent 根据上下文判断 | 默认值；目的明确时建议显式选择 |
+| `auto` | current-session 使用 share；new-session 由新 Agent 判断 | 建议当前对话根据用户意图明确选择 share 或 continue |
 
 ### 输入、生成与持久化
 
 | Control | 作用 |
 |---|---|
 | `--source` / `--file` / stdin | 选择输入内容 |
-| `--generator agent|preserve` | 选择由本机旁路 Agent 生成，或保留准备好的 Markdown |
-| `--runtime` | 仅为 `agent` generator 选择本机旁路 CLI |
+| `--generator current-session|new-session` | 在当前对话整理，或启动新会话整理；默认 current-session |
+| `--runtime` | 仅为 `new-session` 选择本机旁路 CLI |
 | `--attach-context` | 独立决定是否持久化完整的脱敏可读上下文 |
 
-普通使用无需设置这些选项：`source=auto`、`generator=agent`、`runtime=auto`，且不附带完整 Context。
+通常只需提供整理好的 stdin/`--file` 内容并选择 `--intent`；`generator=current-session`、`source=auto`、`runtime=auto`，且不附带完整 Context。`--source` 的 Session 自动发现只用于 `new-session`。
+
+旧的 `preserve` / `agent` 名称分别兼容映射到 `current-session` / `new-session`。为兼容现有服务，产物中的处理来源仍记录为 `preserve` / `agent:<runtime>`。`continue` 的完整正文保留在 Context，当前状态和下一步从相应标题下复制；没有对应标题时使用正文摘要和传入的目标。
 
 ## 隐私与安全
 

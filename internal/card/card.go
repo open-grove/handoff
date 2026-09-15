@@ -743,21 +743,30 @@ func FallbackSections(intent, goal string, source types.Context) Sections {
 	}
 }
 
-// PreserveSections publishes already-prepared stdin or file Markdown without
+// PreparedSections publishes already-prepared stdin or file Markdown without
 // asking a sidecar Agent to rewrite it. The source has already passed through
 // SanitizeContext, so structure is retained while best-effort redaction still
 // applies. Agent Session sources are intentionally rejected: selecting and
 // preparing the relevant excerpt belongs to the calling Agent, not this mode.
-func PreserveSections(goal string, source types.Context) (Sections, error) {
+func PreparedSections(intent, goal string, source types.Context) (Sections, error) {
+	intent = SanitizeIntent(intent)
+	if intent == "" {
+		return Sections{}, errors.New("intent must be auto, share, or continue")
+	}
+	if intent == IntentAuto {
+		// No new Agent is available to infer intent. Keep the legacy preserve
+		// default; the calling Agent should choose share or continue explicitly.
+		intent = IntentShare
+	}
 	kind := strings.ToLower(strings.TrimSpace(source.Source))
 	if kind != "stdin" && kind != "file" {
-		return Sections{}, fmt.Errorf("preserve requires prepared Markdown through stdin or --file; it cannot publish a complete %s Agent Session", valueOrUnknown(kind))
+		return Sections{}, fmt.Errorf("current-session requires prepared Markdown through stdin or --file; it cannot publish a complete %s Agent Session", valueOrUnknown(kind))
 	}
 	if len(source.Messages) == 0 {
-		return Sections{}, errors.New("preserve received no readable content")
+		return Sections{}, errors.New("current-session received no readable content")
 	}
 	if len(source.Messages) > 8 {
-		return Sections{}, fmt.Errorf("preserve accepts at most 8 input files, got %d; combine related files so no content is silently omitted", len(source.Messages))
+		return Sections{}, fmt.Errorf("current-session accepts at most 8 input files, got %d; combine related files so no content is silently omitted", len(source.Messages))
 	}
 	sections := make([]types.HumanSection, 0, len(source.Messages))
 	singleInput := len(source.Messages) == 1
@@ -786,7 +795,23 @@ func PreserveSections(goal string, source types.Context) (Sections, error) {
 		sections = append(sections, types.HumanSection{Title: title, Body: body})
 	}
 	if len(sections) == 0 {
-		return Sections{}, errors.New("preserve received no readable content")
+		return Sections{}, errors.New("current-session received no readable content")
+	}
+	if intent == IntentContinue {
+		// Existing servers require structured state and next steps for continue.
+		// Extract that metadata locally, while keeping the complete prepared
+		// document in Context without role labels or provider Session wrappers.
+		result := FallbackSections(intent, goal, source)
+		var documents []string
+		for _, section := range sections {
+			body := section.Body
+			if !singleInput {
+				body = "## " + markdownTitle(section.Title) + "\n\n" + body
+			}
+			documents = append(documents, body)
+		}
+		result.Context = strings.Join(documents, "\n\n")
+		return result, nil
 	}
 	return Sections{
 		Intent:         IntentShare,
