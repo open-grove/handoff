@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "katex": "0.18.1",
-    "markdown-it": "15.0.1"
+    "markdown-it": "15.0.2"
   },
   "devDependencies": {
     "wrangler": "4.120.1"
